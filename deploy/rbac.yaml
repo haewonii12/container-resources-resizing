@@ -1,0 +1,98 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rightsizing-reader
+  namespace: inference
+rules:
+  # read-only: there are deliberately NO create/update/patch/delete verbs anywhere (plan Principle 1)
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "events", "limitranges"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rightsizing-reader
+  namespace: inference
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: rightsizing-reader
+subjects:
+  - kind: ServiceAccount
+    name: rightsizing-reader
+    namespace: rightsizing
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rightsizing-reader
+  namespace: development
+rules:
+  # read-only: there are deliberately NO create/update/patch/delete verbs anywhere (plan Principle 1)
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "events", "limitranges"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rightsizing-reader
+  namespace: development
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: rightsizing-reader
+subjects:
+  - kind: ServiceAccount
+    name: rightsizing-reader
+    namespace: rightsizing
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rightsizing-app-reader
+  namespace: argocd
+rules:
+  # DV1: read ArgoCD Applications (auto-sync guard, source mapping, sync status)
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rightsizing-app-reader
+  namespace: argocd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: rightsizing-app-reader
+subjects:
+  - kind: ServiceAccount
+    name: rightsizing-reader
+    namespace: rightsizing

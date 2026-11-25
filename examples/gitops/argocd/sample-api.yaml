@@ -1,0 +1,16 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: sample-api
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: http://gitea.gitea.svc:3000/admin-gitea/resource.git
+    targetRevision: main
+    path: inference/sample-api
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: inference
+  # no syncPolicy.automated: a human approves every change with a manual Sync
+  syncPolicy: {}

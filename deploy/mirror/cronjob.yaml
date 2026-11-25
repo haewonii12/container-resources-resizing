@@ -1,0 +1,61 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: gitops-mirror
+  namespace: rightsizing
+spec:
+  schedule: "30 2 * * *"           # before rightsizing (03:00)
+  timeZone: Asia/Seoul
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 900
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: gitops-mirror
+        spec:
+          serviceAccountName: gitops-mirror
+          automountServiceAccountToken: true
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            fsGroup: 1000
+            seccompProfile: {type: RuntimeDefault}
+          containers:
+            - name: mirror
+              image: AGENT_IMAGE_PLACEHOLDER
+              command: ["python", "-m", "rightsizing.mirror"]
+              args: ["--config", "/etc/rightsizing/config.yaml", "--workdir", "/work"]
+              securityContext:
+                runAsUser: 1000
+                runAsGroup: 1000
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: {drop: ["ALL"]}
+              resources:
+                requests: {cpu: 50m, memory: 128Mi}
+                limits: {memory: 512Mi}
+              volumeMounts:
+                - {name: config, mountPath: /etc/rightsizing, readOnly: true}
+                - {name: secrets, mountPath: /var/run/secrets/rightsizing, readOnly: true}
+                - {name: work, mountPath: /work}
+                - {name: tmp, mountPath: /tmp}
+                - {name: home, mountPath: /home/rightsizing}
+          volumes:
+            - name: config
+              configMap: {name: rightsizing-config}
+            - name: secrets
+              secret:
+                secretName: rightsizing-secrets
+                defaultMode: 0440
+                items:
+                  - {key: gitea_token, path: gitea_token}   # the mirror never needs the LLM key
+            - {name: work, emptyDir: {}}
+            - {name: tmp, emptyDir: {}}
+            - {name: home, emptyDir: {}}

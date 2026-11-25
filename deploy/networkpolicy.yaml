@@ -1,0 +1,46 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rightsizing-agent
+  namespace: rightsizing
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: rightsizing-agent
+  policyTypes: ["Ingress", "Egress"]
+  # Ingress: deny ALL. kubectl-ai's MCP HTTP server binds every interface without auth (docs/kubectl-ai.md);
+  # the agent reaches it over localhost inside the pod, which NetworkPolicy does not affect.
+  ingress: []
+  egress:
+    - to:  # DNS
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    - to:  # kube-apiserver (replace with your control-plane CIDR)
+        - ipBlock: {cidr: APISERVER_CIDR_PLACEHOLDER/32}
+      ports:
+        - {protocol: TCP, port: 443}
+        - {protocol: TCP, port: 6443}
+    - to:  # Prometheus
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: PROMETHEUS_NAMESPACE_PLACEHOLDER
+      ports:
+        - {protocol: TCP, port: 9090}
+    - to:  # Gitea
+        - ipBlock: {cidr: GITEA_CIDR_PLACEHOLDER/32}
+      ports:
+        - {protocol: TCP, port: 443}
+    - to:  # in-house LLM endpoint
+        - ipBlock: {cidr: LLM_CIDR_PLACEHOLDER/32}
+      ports:
+        - {protocol: TCP, port: 443}
+        - {protocol: TCP, port: 80}
+    - to:  # DV3: Helm chart repositories used by `helm dependency build`
+        - ipBlock: {cidr: CHART_REPO_CIDR_PLACEHOLDER/32}
+      ports:
+        - {protocol: TCP, port: 443}

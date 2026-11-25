@@ -1,0 +1,52 @@
+# One-off run (initial import or manual trigger). NOT in kustomization.yaml.
+#   kubectl apply -f pod-init.yaml && kubectl -n rightsizing logs -f gitops-mirror-init
+#   kubectl -n rightsizing delete pod gitops-mirror-init   # before re-running
+# Deletes still need >= 2 successful runs >= 12h apart, so a manual run can never confirm a delete early.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gitops-mirror-init
+  namespace: rightsizing
+  labels:
+    app.kubernetes.io/name: gitops-mirror
+spec:
+  activeDeadlineSeconds: 900
+  serviceAccountName: gitops-mirror
+  automountServiceAccountToken: true
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    fsGroup: 1000
+    seccompProfile: {type: RuntimeDefault}
+  containers:
+    - name: mirror
+      image: docker.io/haewon123/rightsizing-agent:0.2.3   # applied directly (no kustomize): keep in sync with kustomization.yaml
+      command: ["python", "-m", "rightsizing.mirror"]
+      args: ["--config", "/etc/rightsizing/config.yaml", "--workdir", "/work"]
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities: {drop: ["ALL"]}
+      resources:
+        requests: {cpu: 50m, memory: 128Mi}
+        limits: {memory: 512Mi}
+      volumeMounts:
+        - {name: config, mountPath: /etc/rightsizing, readOnly: true}
+        - {name: secrets, mountPath: /var/run/secrets/rightsizing, readOnly: true}
+        - {name: work, mountPath: /work}
+        - {name: tmp, mountPath: /tmp}
+        - {name: home, mountPath: /home/rightsizing}
+  volumes:
+    - name: config
+      configMap: {name: rightsizing-config}
+    - name: secrets
+      secret:
+        secretName: rightsizing-secrets
+        defaultMode: 0440
+        items:
+          - {key: gitea_token, path: gitea_token}   # the mirror never needs the LLM key
+    - {name: work, emptyDir: {}}
+    - {name: tmp, emptyDir: {}}
+    - {name: home, emptyDir: {}}

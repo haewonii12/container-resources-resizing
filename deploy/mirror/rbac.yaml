@@ -1,0 +1,66 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gitops-mirror-reader
+  namespace: inference
+rules:
+  # read-only: the mirror never writes workloads
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gitops-mirror-reader
+  namespace: inference
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: gitops-mirror-reader}
+subjects:
+  - {kind: ServiceAccount, name: gitops-mirror, namespace: rightsizing}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gitops-mirror-reader
+  namespace: development
+rules:
+  # read-only: the mirror never writes workloads
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gitops-mirror-reader
+  namespace: development
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: gitops-mirror-reader}
+subjects:
+  - {kind: ServiceAccount, name: gitops-mirror, namespace: rightsizing}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gitops-mirror-apps
+  namespace: argocd
+rules:
+  # create/delete only: no update/patch (cannot enable auto-sync or strip finalizers on existing apps).
+  # What a created Application may contain is enforced by the ValidatingAdmissionPolicy + AppProject.
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications"]
+    verbs: ["get", "list", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gitops-mirror-apps
+  namespace: argocd
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: gitops-mirror-apps}
+subjects:
+  - {kind: ServiceAccount, name: gitops-mirror, namespace: rightsizing}

@@ -1,0 +1,30 @@
+# Deployed by ArgoCD with MANUAL sync, from a repo/path the rightsizing bot token cannot write (README).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - serviceaccount.yaml
+  - rbac.yaml
+  - configmap.yaml
+  - cronjob.yaml
+  - networkpolicy.yaml
+  # GitOps mirror (separate SA / AppProject / admission policy; see README "GitOps mirror")
+  - mirror/serviceaccount.yaml
+  - mirror/rbac.yaml
+  - mirror/appproject.yaml
+  - mirror/validatingadmissionpolicy.yaml
+  - mirror/cronjob.yaml
+  - mirror/networkpolicy.yaml
+images:
+  - name: AGENT_IMAGE_PLACEHOLDER
+    newName: docker.io/haewon123/rightsizing-agent
+    newTag: "0.2.3"
+  - name: KUBECTL_AI_IMAGE_PLACEHOLDER
+    newName: docker.io/haewon123/rightsizing-kubectl-ai
+    newTag: v0.0.31
+patches:
+  - target: {kind: CronJob, name: rightsizing}
+    patch: |-
+      - op: replace
+        path: /spec/schedule
+        value: "0 3 * * *"

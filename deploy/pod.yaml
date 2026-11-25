@@ -1,0 +1,87 @@
+# One-off manual run (same spec as the CronJob's pod). NOT listed in kustomization.yaml on purpose.
+#   kubectl apply -f pod.yaml
+#   kubectl -n rightsizing logs -f rightsizing-manual -c agent
+#   kubectl -n rightsizing delete pod rightsizing-manual     # pods are immutable: delete before re-running
+# Prerequisites: `kubectl apply -k .` (namespace, SA, RBAC, ConfigMap, NetworkPolicy) and the rightsizing-secrets Secret.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: rightsizing-manual
+  namespace: rightsizing
+  labels:
+    app.kubernetes.io/name: rightsizing-agent   # so the NetworkPolicy (ingress deny) applies
+spec:
+  serviceAccountName: rightsizing-reader
+  automountServiceAccountToken: true
+  restartPolicy: Never
+  activeDeadlineSeconds: 5700
+  shareProcessNamespace: false
+  securityContext:
+    runAsNonRoot: true
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  initContainers:
+    # Native sidecar: stopped by the kubelet when the agent exits, so the pod reaches Completed.
+    - name: kubectl-ai
+      image: docker.io/haewon123/rightsizing-kubectl-ai:v0.0.31
+      restartPolicy: Always
+      ports:
+        - name: mcp
+          containerPort: 9080
+      startupProbe:
+        tcpSocket:
+          port: 9080
+        periodSeconds: 2
+        failureThreshold: 30
+      securityContext:
+        runAsUser: 1001
+        runAsGroup: 1001
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests: {cpu: 50m, memory: 64Mi}
+        limits: {memory: 256Mi}
+      volumeMounts:
+        - {name: kai-tmp, mountPath: /tmp}
+        - {name: kai-home, mountPath: /home/kubectl-ai}
+  containers:
+    - name: agent
+      image: docker.io/haewon123/rightsizing-agent:0.2.3
+      # Add "--dry-run" to only print proposals, or "--only", "development/Deployment/<name>" to limit the run.
+      # Remove "--no-llm" once an LLM endpoint is configured.
+      args: ["--config", "/etc/rightsizing/config.yaml", "--workdir", "/work", "--no-llm"]
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests: {cpu: 200m, memory: 256Mi}
+        limits: {memory: 1Gi}
+      volumeMounts:
+        - {name: config, mountPath: /etc/rightsizing, readOnly: true}
+        - {name: secrets, mountPath: /var/run/secrets/rightsizing, readOnly: true}
+        - {name: work, mountPath: /work}
+        - {name: tmp, mountPath: /tmp}
+        - {name: home, mountPath: /home/rightsizing}
+  volumes:
+    - name: config
+      configMap:
+        name: rightsizing-config
+    - name: secrets
+      secret:
+        secretName: rightsizing-secrets
+        defaultMode: 0440
+        items:
+          - {key: llm_api_key, path: llm_api_key}
+          - {key: gitea_token, path: gitea_token}
+    - {name: work, emptyDir: {}}
+    - {name: tmp, emptyDir: {}}
+    - {name: home, emptyDir: {}}
+    - {name: kai-tmp, emptyDir: {}}
+    - {name: kai-home, emptyDir: {}}

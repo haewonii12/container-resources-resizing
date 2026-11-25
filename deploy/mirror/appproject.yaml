@@ -1,0 +1,16 @@
+# DV-C: Applications created by the mirror live here, never in `default`.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: gitops-mirror
+  namespace: argocd
+spec:
+  description: Applications registered by the rightsizing GitOps mirror (manual sync only)
+  sourceRepos:
+    - MANIFEST_REPO_URL_PLACEHOLDER   # must equal config git.url
+  destinations:
+    - {server: https://kubernetes.default.svc, namespace: inference}
+    - {server: https://kubernetes.default.svc, namespace: development}
+  clusterResourceWhitelist: []
+  namespaceResourceWhitelist:
+    - {group: apps, kind: Deployment}

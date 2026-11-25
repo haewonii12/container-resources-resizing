@@ -1,0 +1,18 @@
+{
+ "get_unreachable": {
+  "content": [
+   {
+    "type": "text",
+    "text": "Command: \"kubectl get pods -n development\"\nError: \"exit status 1\"\nStdout: \"\"\nStderr: \"E1125 14:21:56.599694   90112 memcache.go:381] \\\"Couldn't get current server API group list\\\" err=\\\"Get \\\\\\\"https://127.0.0.1:1/api?timeout=32s\\\\\\\": dial tcp 127.0.0.1:1: connect: connection refused\\\"\\nE1125 14:21:56.600020   90112 memcache.go:381] \\\"Couldn't get current server API group list\\\" err=\\\"Get \\\\\\\"https://127.0.0.1:1/api?timeout=32s\\\\\\\": dial tcp 127.0.0.1:1: connect: connection refused\\\"\\nE1125 14:21:56.601095   90112 memcache.go:381] \\\"Couldn't get current server API group list\\\" err=\\\"Get \\\\\\\"https://127.0.0.1:1/api?timeout=32s\\\\\\\": dial tcp 127.0.0.1:1: connect: connection refused\\\"\\nE1125 14:21:56.601194   90112 memcache.go:381] \\\"Couldn't get current server API group list\\\" err=\\\"Get \\\\\\\"https://127.0.0.1:1/api?timeout=32s\\\\\\\": dial tcp 127.0.0.1:1: connect: connection refused\\\"\\nE1125 14:21:56.602385   90112 memcache.go:381] \\\"Couldn't get current server API group list\\\" err=\\\"Get \\\\\\\"https://127.0.0.1:1/api?timeout=32s\\\\\\\": dial tcp 127.0.0.1:1: connect: connection refused\\\"\\nThe connection to the server 127.0.0.1:1 was refused - did you specify the right host or port?\\n\"\nExitCode: 1\nStreamType: \"\"}"
+   }
+  ]
+ },
+ "shell_meta_executed": {
+  "content": [
+   {
+    "type": "text",
+    "text": "Command: \"kubectl version --client; echo INJECTED\"\nError: \"\"\nStdout: \"Client Version: v1.37.2\\nKustomize Version: v5.8.1\\nINJECTED\\n\"\nStderr: \"\"\nExitCode: 0\nStreamType: \"\"}"
+   }
+  ]
+ }
+}

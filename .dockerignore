@@ -1,0 +1,9 @@
+.venv
+tests
+deploy
+docs
+scripts/*.py
+scripts/verify-cluster.sh
+**/__pycache__
+.pytest_cache
+dist

@@ -1,0 +1,94 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: rightsizing
+  namespace: rightsizing
+spec:
+  schedule: "0 3 * * *"            # overridden in kustomization.yaml (Principle 5)
+  timeZone: Asia/Seoul
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 5700    # timeouts.run_budget (5400) + 300; the agent reserves time for the push itself
+      ttlSecondsAfterFinished: 86400 # failed-Job alerts resolve after a day
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: rightsizing-agent
+        spec:
+          serviceAccountName: rightsizing-reader
+          automountServiceAccountToken: true
+          restartPolicy: Never
+          shareProcessNamespace: false
+          securityContext:
+            runAsNonRoot: true
+            fsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          initContainers:
+            # Native sidecar (k8s >= 1.29): terminated by the kubelet when the agent exits, so the Job completes.
+            # Holds NO secrets. The startupProbe holds the agent container until MCP is listening.
+            - name: kubectl-ai
+              image: KUBECTL_AI_IMAGE_PLACEHOLDER
+              restartPolicy: Always
+              ports:
+                - name: mcp
+                  containerPort: 9080
+              startupProbe:
+                tcpSocket:
+                  port: 9080
+                periodSeconds: 2
+                failureThreshold: 30
+              securityContext:
+                runAsUser: 1001
+                runAsGroup: 1001
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests: {cpu: 50m, memory: 64Mi}
+                limits: {memory: 256Mi}
+              volumeMounts:
+                - {name: kai-tmp, mountPath: /tmp}
+                - {name: kai-home, mountPath: /home/kubectl-ai}
+          containers:
+            - name: agent
+              image: AGENT_IMAGE_PLACEHOLDER
+              args: ["--config", "/etc/rightsizing/config.yaml", "--workdir", "/work"]
+              securityContext:
+                runAsUser: 1000
+                runAsGroup: 1000
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests: {cpu: 200m, memory: 256Mi}
+                limits: {memory: 1Gi}
+              volumeMounts:
+                - {name: config, mountPath: /etc/rightsizing, readOnly: true}
+                - {name: secrets, mountPath: /var/run/secrets/rightsizing, readOnly: true}
+                - {name: work, mountPath: /work}
+                - {name: tmp, mountPath: /tmp}
+                - {name: home, mountPath: /home/rightsizing}
+          volumes:
+            - name: config
+              configMap:
+                name: rightsizing-config
+            - name: secrets
+              secret:
+                secretName: rightsizing-secrets   # created by hand, never in git (README)
+                defaultMode: 0440
+                items:
+                  - {key: llm_api_key, path: llm_api_key}
+                  - {key: gitea_token, path: gitea_token}
+            - {name: work, emptyDir: {}}
+            - {name: tmp, emptyDir: {}}
+            - {name: home, emptyDir: {}}
+            - {name: kai-tmp, emptyDir: {}}
+            - {name: kai-home, emptyDir: {}}

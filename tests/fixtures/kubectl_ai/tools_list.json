@@ -1,0 +1,40 @@
+{
+ "tools": [
+  {
+   "annotations": {},
+   "description": "Executes a bash command. Use this tool only when you need to execute a shell command.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "command": {
+      "type": "string",
+      "description": "The bash command to execute."
+     },
+     "modifies_resource": {
+      "type": "string",
+      "description": "Whether the command modifies a kubernetes resource.\nPossible values:\n- \"yes\" if the command modifies a resource\n- \"no\" if the command does not modify a resource\n- \"unknown\" if the command's effect on the resource is unknown\n"
+     }
+    }
+   },
+   "name": "bash"
+  },
+  {
+   "annotations": {},
+   "description": "Executes a kubectl command against the user's Kubernetes cluster. Use this tool only when you need to query or modify the state of the user's Kubernetes cluster.\n\nIMPORTANT: Interactive commands are not supported in this environment. This includes:\n- kubectl exec with -it flag (use non-interactive exec instead)\n- kubectl edit (use kubectl get -o yaml, kubectl patch, or kubectl apply instead)\n- kubectl port-forward (use alternative methods like NodePort or LoadBalancer)\n\nFor interactive operations, please use these non-interactive alternatives:\n- Instead of 'kubectl edit', use 'kubectl get -o yaml' to view, 'kubectl patch' for targeted changes, or 'kubectl apply' to apply full changes\n- Instead of 'kubectl exec -it', use 'kubectl exec' with a specific command\n- Instead of 'kubectl port-forward', use service types like NodePort or LoadBalancer",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "command": {
+      "type": "string",
+      "description": "The complete kubectl command to execute. Prefer to use heredoc syntax for multi-line commands. Please include the kubectl prefix as well.\n\nIMPORTANT: Do not use interactive commands. Instead:\n- Use 'kubectl get -o yaml', 'kubectl patch', or 'kubectl apply' instead of 'kubectl edit'\n- Use 'kubectl exec' with specific commands instead of 'kubectl exec -it'\n- Use service types like NodePort or LoadBalancer instead of 'kubectl port-forward'\n\nExamples:\nuser: what pods are running in the cluster?\nassistant: kubectl get pods\n\nuser: what is the status of the pod my-pod?\nassistant: kubectl get pod my-pod -o jsonpath='{.status.phase}'\n\nuser: I need to edit the pod configuration\nassistant: # Option 1: Using patch for targeted changes\nkubectl patch pod my-pod --patch '{\"spec\":{\"containers\":[{\"name\":\"main\",\"image\":\"new-image\"}]}}'\n\n# Option 2: Using get and apply for full changes\nkubectl get pod my-pod -o yaml > pod.yaml\n# Edit pod.yaml locally\nkubectl apply -f pod.yaml\n\nuser: I need to execute a command in the pod\nassistant: kubectl exec my-pod -- /bin/sh -c \"your command here\""
+     },
+     "modifies_resource": {
+      "type": "string",
+      "description": "Whether the command modifies a kubernetes resource.\nPossible values:\n- \"yes\" if the command modifies a resource\n- \"no\" if the command does not modify a resource\n- \"unknown\" if the command's effect on the resource is unknown"
+     }
+    }
+   },
+   "name": "kubectl"
+  }
+ ]
+}

@@ -1,0 +1,31 @@
+# kubectl-ai MCP sidecar image (pinned, checksum-verified). Runs as UID 1001 and never receives secrets.
+# Build: docker build -t <registry>/rightsizing-kubectl-ai:v0.0.31 -f Dockerfile.kubectl-ai .
+# See docs/kubectl-ai.md: streamable-HTTP is native, so no bridge is needed.
+FROM debian:bookworm-slim AS tools
+ARG TARGETARCH=amd64
+ARG KUBECTL_AI_VERSION=v0.0.31
+ARG KUBECTL_AI_SHA256_amd64=872ef891232b01772c46a54b1866b383e043100e3806835158187c603eb490d1
+ARG KUBECTL_AI_SHA256_arm64=c2eb7fb99bf5217968a505ab38b0a230d86d1581957ccdda66167020b114d90d
+ARG KUBECTL_VERSION=v1.31.4
+ARG KUBECTL_SHA256_amd64=298e19e9c6c17199011404278f0ff8168a7eca4217edad9097af577023a5620f
+ARG KUBECTL_SHA256_arm64=b97e93c20e3be4b8c8fa1235a41b4d77d4f2022ed3d899230dbbbbd43d26f872
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    case "$TARGETARCH" in amd64) ka="x86_64"; kas="$KUBECTL_AI_SHA256_amd64"; ks="$KUBECTL_SHA256_amd64";; \
+                          arm64) ka="arm64"; kas="$KUBECTL_AI_SHA256_arm64"; ks="$KUBECTL_SHA256_arm64";; \
+                          *) echo "unsupported arch $TARGETARCH"; exit 1;; esac; \
+    curl -fsSLo /tmp/kai.tgz "https://github.com/GoogleCloudPlatform/kubectl-ai/releases/download/${KUBECTL_AI_VERSION}/kubectl-ai_Linux_${ka}.tar.gz"; \
+    echo "${kas}  /tmp/kai.tgz" | sha256sum -c -; \
+    tar -xzf /tmp/kai.tgz -C /tmp && install -m 0755 /tmp/kubectl-ai /usr/local/bin/kubectl-ai; \
+    curl -fsSLo /usr/local/bin/kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl"; \
+    echo "${ks}  /usr/local/bin/kubectl" | sha256sum -c -; chmod 0755 /usr/local/bin/kubectl
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates bash && rm -rf /var/lib/apt/lists/* \
+    && useradd --uid 1001 --create-home --home-dir /home/kubectl-ai kubectl-ai
+COPY --from=tools /usr/local/bin/kubectl-ai /usr/local/bin/kubectl /usr/local/bin/
+COPY scripts/sidecar-wrapper.sh /usr/local/bin/sidecar-wrapper.sh
+USER 1001:1001
+ENV HOME=/home/kubectl-ai
+# In-cluster: kubectl uses the pod's (read-only) ServiceAccount token automatically.
+ENTRYPOINT ["kubectl-ai", "--mcp-server", "--mcp-server-mode", "streamable-http", "--http-port", "9080"]

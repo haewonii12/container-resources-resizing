@@ -1,0 +1,35 @@
+# DV-C: even with a leaked token, the mirror SA can only create inert, manual-sync Applications in gitops-mirror.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: gitops-mirror-applications
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["argoproj.io"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE"]
+        resources: ["applications"]
+  matchConditions:
+    - name: only-the-mirror-service-account
+      expression: "request.userInfo.username == 'system:serviceaccount:rightsizing:gitops-mirror'"
+  validations:
+    - expression: "has(object.spec.project) && object.spec.project == 'gitops-mirror'"
+      message: "mirror Applications must use AppProject gitops-mirror"
+    - expression: "!has(object.spec.syncPolicy) || !has(object.spec.syncPolicy.automated)"
+      message: "mirror Applications must not enable automated sync"
+    - expression: "!has(object.operation)"
+      message: "mirror Applications must not request a sync operation"
+    - expression: "!has(object.metadata.finalizers) || size(object.metadata.finalizers) == 0"
+      message: "mirror Applications must not carry finalizers (a delete would cascade)"
+    - expression: "has(object.spec.source) && !has(object.spec.sources)"
+      message: "mirror Applications must be single-source"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: gitops-mirror-applications
+spec:
+  policyName: gitops-mirror-applications
+  validationActions: ["Deny"]

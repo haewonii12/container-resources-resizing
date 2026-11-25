@@ -1,0 +1,46 @@
+# For clusters older than 1.29 (no native sidecars): kubectl-ai runs as a plain container under
+# scripts/sidecar-wrapper.sh and exits when the agent writes /shared/done (shared emptyDir).
+# Without startupProbe gating the agent relies on its bounded 60s MCP connect retry.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../deploy
+patches:
+  - target: {kind: CronJob, name: rightsizing}
+    patch: |-
+      - op: remove
+        path: /spec/jobTemplate/spec/template/spec/initContainers
+      - op: add
+        path: /spec/jobTemplate/spec/template/spec/containers/-
+        value:
+          name: kubectl-ai
+          image: KUBECTL_AI_IMAGE_PLACEHOLDER
+          command: ["/usr/local/bin/sidecar-wrapper.sh"]
+          args: ["--mcp-server", "--mcp-server-mode", "streamable-http", "--http-port", "9080"]
+          env:
+            - {name: RS_DONE_FILE, value: /shared/done}
+          ports:
+            - {name: mcp, containerPort: 9080}
+          securityContext:
+            runAsUser: 1001
+            runAsGroup: 1001
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {memory: 256Mi}
+          volumeMounts:
+            - {name: kai-tmp, mountPath: /tmp}
+            - {name: kai-home, mountPath: /home/kubectl-ai}
+            - {name: shared, mountPath: /shared, readOnly: true}
+      - op: add
+        path: /spec/jobTemplate/spec/template/spec/containers/0/env
+        value:
+          - {name: RS_DONE_FILE, value: /shared/done}
+      - op: add
+        path: /spec/jobTemplate/spec/template/spec/containers/0/volumeMounts/-
+        value: {name: shared, mountPath: /shared}
+      - op: add
+        path: /spec/jobTemplate/spec/template/spec/volumes/-
+        value: {name: shared, emptyDir: {medium: Memory, sizeLimit: 1Mi}}
