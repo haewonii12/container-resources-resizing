@@ -1,6 +1,6 @@
 """Generate deploy/alerts/{rules.yaml,prometheusrule.yaml} from one definition (tests check they are current).
 
-Usage: python scripts/gen_alerts.py
+Usage: python scripts/gen_alerts.py   (namespaces come from deploy/configmap.yaml, like gen_namespaces.py)
 """
 
 from __future__ import annotations
@@ -15,48 +15,53 @@ sys.path.insert(0, str(ROOT))
 from ruamel.yaml import YAML  # noqa: E402
 
 from rightsizing.prom_queries import recording_rules  # noqa: E402
+from gen_namespaces import load_config  # noqa: E402
 
-ALERTS = [
-    {"alert": "RightsizingJobFailed",
-     "expr": 'kube_job_status_failed{namespace="rightsizing",job_name!~"gitops-mirror.*"} > 0 and on (job_name) '
-             '(time() - kube_job_status_start_time{namespace="rightsizing",job_name!~"gitops-mirror.*"} < 86400)',
-     "labels": {"severity": "warning"},
-     "annotations": {"summary": "rightsizing job failed (exit 2 = infrastructure, exit 3 = security refusal)",
-                     "description": "Check the job logs: kubectl -n rightsizing logs job/{{ $labels.job_name }} -c agent"}},
-    {"alert": "RightsizingJobNotRun",
-     "expr": 'time() - kube_cronjob_status_last_successful_time{namespace="rightsizing",cronjob="rightsizing"} '
-             '> 2 * 86400',
-     "labels": {"severity": "warning"},
-     "annotations": {"summary": "rightsizing CronJob has not succeeded for 2 days"}},
-    {"alert": "MirrorJobFailed",
-     "expr": 'kube_job_status_failed{namespace="rightsizing",job_name=~"gitops-mirror.*"} > 0 and on (job_name) '
-             '(time() - kube_job_status_start_time{namespace="rightsizing",job_name=~"gitops-mirror.*"} < 86400)',
-     "labels": {"severity": "warning"},
-     "annotations": {"summary": "gitops-mirror job failed (exit 2 = infrastructure, exit 4 = safety halt)",
-                     "description": "exit 4 = mass-delete guard, Application with resources finalizer "
-                                    "(delete it manually) or Application name conflict. "
-                                    "kubectl -n rightsizing logs job/{{ $labels.job_name }}"}},
-    {"alert": "MirrorJobNotRun",
-     "expr": 'time() - kube_cronjob_status_last_successful_time{namespace="rightsizing",cronjob="gitops-mirror"} '
-             '> 2 * 86400',
-     "labels": {"severity": "warning"},
-     "annotations": {"summary": "gitops-mirror CronJob has not succeeded for 2 days"}},
-    {"alert": "TargetWorkloadOOM",
-     "expr": 'increase(kube_pod_container_status_restarts_total{namespace=~"inference|development"}[30m]) > 0 '
-             'and on (namespace, pod, container) '
-             'kube_pod_container_status_last_terminated_reason{namespace=~"inference|development",reason="OOMKilled"}'
-             ' == 1',
-     "labels": {"severity": "warning"},
-     "annotations": {"summary": "OOMKilled in {{ $labels.namespace }}/{{ $labels.pod }} ({{ $labels.container }})",
-                     "description": "If a rightsizing commit was synced recently: "
-                                    "git log --grep 'Rightsizing-Workload: {{ $labels.namespace }}/' ; "
-                                    "git revert <sha> and sync to roll back."}},
-]
+
+def alerts(namespaces: list[str]) -> list[dict]:
+    ns_re = "|".join(sorted(namespaces))
+    return [
+        {"alert": "RightsizingJobFailed",
+         "expr": 'kube_job_status_failed{namespace="rightsizing",job_name!~"gitops-mirror.*"} > 0 and on (job_name) '
+                 '(time() - kube_job_status_start_time{namespace="rightsizing",job_name!~"gitops-mirror.*"} < 86400)',
+         "labels": {"severity": "warning"},
+         "annotations": {"summary": "rightsizing job failed (exit 2 = infrastructure, exit 3 = security refusal)",
+                         "description": "Check the job logs: kubectl -n rightsizing logs job/{{ $labels.job_name }} -c agent"}},
+        {"alert": "RightsizingJobNotRun",
+         "expr": 'time() - kube_cronjob_status_last_successful_time{namespace="rightsizing",cronjob="rightsizing"} '
+                 '> 2 * 86400',
+         "labels": {"severity": "warning"},
+         "annotations": {"summary": "rightsizing CronJob has not succeeded for 2 days"}},
+        {"alert": "MirrorJobFailed",
+         "expr": 'kube_job_status_failed{namespace="rightsizing",job_name=~"gitops-mirror.*"} > 0 and on (job_name) '
+                 '(time() - kube_job_status_start_time{namespace="rightsizing",job_name=~"gitops-mirror.*"} < 86400)',
+         "labels": {"severity": "warning"},
+         "annotations": {"summary": "gitops-mirror job failed (exit 2 = infrastructure, exit 4 = safety halt)",
+                         "description": "exit 4 = mass-delete guard, Application with resources finalizer "
+                                        "(delete it manually) or Application name conflict. "
+                                        "kubectl -n rightsizing logs job/{{ $labels.job_name }}"}},
+        {"alert": "MirrorJobNotRun",
+         "expr": 'time() - kube_cronjob_status_last_successful_time{namespace="rightsizing",cronjob="gitops-mirror"} '
+                 '> 2 * 86400',
+         "labels": {"severity": "warning"},
+         "annotations": {"summary": "gitops-mirror CronJob has not succeeded for 2 days"}},
+        {"alert": "TargetWorkloadOOM",
+         "expr": 'increase(kube_pod_container_status_restarts_total{namespace=~"' + ns_re + '"}[30m]) > 0 '
+                 'and on (namespace, pod, container) '
+                 'kube_pod_container_status_last_terminated_reason{namespace=~"' + ns_re + '",reason="OOMKilled"}'
+                 ' == 1',
+         "labels": {"severity": "warning"},
+         "annotations": {"summary": "OOMKilled in {{ $labels.namespace }}/{{ $labels.pod }} ({{ $labels.container }})",
+                         "description": "If a rightsizing commit was synced recently: "
+                                        "git log --grep 'Rightsizing-Workload: {{ $labels.namespace }}/' ; "
+                                        "git revert <sha> and sync to roll back."}},
+    ]
 
 
 def groups() -> list[dict]:
-    return [{"name": "rightsizing.recording", "interval": "1m", "rules": recording_rules()},
-            {"name": "rightsizing.alerts", "rules": ALERTS}]
+    namespaces = load_config().namespaces
+    return [{"name": "rightsizing.recording", "interval": "1m", "rules": recording_rules(namespaces)},
+            {"name": "rightsizing.alerts", "rules": alerts(namespaces)}]
 
 
 def dump(data) -> str:

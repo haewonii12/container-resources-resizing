@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Protocol
 
-from . import ALLOWED_NAMESPACES, quantity
+from . import quantity
 from .config import Config
 from .manifest import AppSource
 from .models import ContainerResources, LimitRangeBounds, WorkloadRef
@@ -160,7 +160,7 @@ def argo_resource_status(app: dict, ref: WorkloadRef) -> str | None:
 def discover(api: KubeAPI, cfg: Config) -> tuple[list[Candidate], list[Skipped]]:
     candidates: list[Candidate] = []
     skipped: list[Skipped] = []
-    for ns in [n for n in cfg.namespaces if n in ALLOWED_NAMESPACES]:
+    for ns in cfg.namespaces:  # validated by Config (namespace_error)
         hpas = api.list_hpas(ns)
         lr = limitrange_bounds(api.list_limitranges(ns))
         for w in api.list_workloads(ns):

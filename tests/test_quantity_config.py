@@ -52,6 +52,12 @@ def test_config_defaults_valid():
                   "development": {"request_multiplier": 1.1, "mem_limit_multiplier": 1.2, "max_shrink": 0.5}}},
     {"namespaces": ["inference"], "policies": {}},
     {"timeouts": {"run_budget": 600}},
+    {"namespaces": ["argocd"], "policies": {"argocd": {"request_multiplier": 1.1, "mem_limit_multiplier": 1.2, "max_shrink": 0.5}}},
+    {"namespaces": ["rightsizing"], "policies": {"rightsizing": {"request_multiplier": 1.1, "mem_limit_multiplier": 1.2, "max_shrink": 0.5}}},
+    {"namespaces": ["Bad_NS"], "policies": {"Bad_NS": {"request_multiplier": 1.1, "mem_limit_multiplier": 1.2, "max_shrink": 0.5}}},
+    {"namespaces": ['x"} or vector(1) #'], "policies": {}},
+    {"namespaces": ["inference", "inference"]},
+    {"namespaces": ["inference"], "mirror": {"namespaces": ["development"]}},
 ])
 def test_config_rejects(override):
     with pytest.raises(ValidationError):
@@ -70,3 +76,11 @@ def test_secret_store_reads_files(tmp_path):
     assert store.known_values() == ["s3cr3t"]
     with pytest.raises(FileNotFoundError):
         store.read("llm_api_key")
+
+
+def test_config_accepts_any_namespace_with_a_policy():
+    pol = {"request_multiplier": 1.3, "mem_limit_multiplier": 1.5, "max_shrink": 0.25}
+    cfg = Config.model_validate({"namespaces": ["default", "dify"], "policies": {"default": pol, "dify": pol},
+                                 "mirror": {"namespaces": ["default"]}})
+    assert cfg.namespaces == ["default", "dify"] and cfg.mirror.namespaces == ["default"]
+    assert cfg.policy_for("dify").max_shrink == 0.25

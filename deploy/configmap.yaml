@@ -6,6 +6,8 @@ metadata:
 data:
   # Every *_PLACEHOLDER must be replaced before the first run. Secrets are NOT here (see README: rightsizing-secrets).
   config.yaml: |
+    # Target namespaces: any namespace with an entry under `policies` (not kube-system/kube-public/kube-node-lease/
+    # argocd/rightsizing). After changing this list run: python scripts/gen_namespaces.py && python scripts/gen_alerts.py
     namespaces: [inference, development]
     policies:
       inference:
@@ -56,7 +58,7 @@ data:
       mcp_connect: 60
       run_budget: 5400
     mirror:
-      namespaces: [inference, development]
+      namespaces: [inference, development]   # subset of `namespaces`; omit to use the same list
       argocd_project: gitops-mirror
       min_confirmations: 2
       min_missing_interval_hours: 12

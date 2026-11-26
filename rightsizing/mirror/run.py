@@ -133,7 +133,7 @@ def run_mirror(cfg: Config, kube: MirrorKube, repo: GitRepo, now: datetime, dry_
     cluster_names: dict[str, set[str] | None] = {}
     adoptable: dict[str, dict[str, str]] = {}
     skipped: dict[str, str] = {}
-    for ns in m.namespaces:  # validated against the hard allowlist in MirrorConfig
+    for ns in m.namespaces:  # validated by MirrorConfig (subset of Config.namespaces)
         if apps_failed:  # without the Application list nothing can be judged: reset counters, change nothing
             cluster_names[ns] = None
             continue

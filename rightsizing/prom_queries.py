@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 
-from . import ALLOWED_NAMESPACES
+from . import namespace_error
 
 RR_CPU = "rightsizing:container_cpu_usage:rate5m"
 RR_MEM = "rightsizing:container_memory_working_set:bytes"
@@ -17,7 +17,7 @@ _CONTAINER_FILTER = 'container!="",container!="POD",image!=""'
 
 
 def _check(namespace: str, name: str) -> None:
-    if namespace not in ALLOWED_NAMESPACES or not _NAME.match(name):
+    if namespace_error(namespace) or not _NAME.match(name):
         raise ValueError(f"refusing to build query for {namespace}/{name}")
 
 
@@ -108,8 +108,11 @@ def avg_replicas(namespace: str, kind: str, name: str, days: int) -> str:
 
 
 # Recording rules shipped in deploy/alerts (kept here so tests can check they match the client's metric names).
-def recording_rules() -> list[dict]:
-    ns_re = "|".join(sorted(ALLOWED_NAMESPACES))
+def recording_rules(namespaces: list[str] | tuple[str, ...]) -> list[dict]:
+    errors = [e for e in (namespace_error(ns) for ns in namespaces) if e]
+    if errors or not namespaces:
+        raise ValueError(f"refusing to build recording rules: {errors or 'no namespaces'}")
+    ns_re = "|".join(sorted(namespaces))
     owner_deploy = (
         'max by (namespace, pod, workload, workload_kind) (label_replace(label_replace(label_replace('
         f'kube_pod_owner{{namespace=~"{ns_re}",owner_kind="ReplicaSet"}}, "replicaset", "$1", "owner_name", "(.*)")'

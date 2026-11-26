@@ -254,3 +254,30 @@ def test_mirror_alerts_present():
     rules = (DEPLOY / "alerts/rules.yaml").read_text()
     assert "alert: MirrorJobFailed" in rules and "alert: MirrorJobNotRun" in rules
     assert 'job_name!~"gitops-mirror.*"' in rules  # rightsizing alert does not double-fire
+
+
+def test_namespaced_rbac_is_generated_and_current():
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import gen_namespaces
+
+    for name, text in gen_namespaces.render().items():
+        assert (DEPLOY / name).read_text() == text, f"run scripts/gen_namespaces.py ({name} is stale)"
+
+
+def test_generators_follow_the_configmap_namespaces():
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import gen_namespaces
+    from rightsizing.config import Config
+
+    pol = {"request_multiplier": 1.3, "mem_limit_multiplier": 1.5, "max_shrink": 0.25}
+    cfg = Config.model_validate({"namespaces": ["default", "dify"], "policies": {"default": pol, "dify": pol},
+                                 "mirror": {"namespaces": ["default"]}})
+    out = gen_namespaces.render(cfg)
+    yaml = YAML(typ="safe")
+    roles = [d for d in yaml.load_all(out["rbac.yaml"]) if d and d["kind"] == "Role"]
+    assert {r["metadata"]["namespace"] for r in roles} == {"default", "dify", "argocd"}
+    mroles = [d for d in yaml.load_all(out["mirror/rbac.yaml"]) if d and d["kind"] == "Role"]
+    assert {r["metadata"]["namespace"] for r in mroles} == {"default", "argocd"}
+    proj = yaml.load(out["mirror/appproject.yaml"])
+    assert [d["namespace"] for d in proj["spec"]["destinations"]] == ["default"]
+    assert proj["spec"]["sourceRepos"] == ["MANIFEST_REPO_URL_PLACEHOLDER"]

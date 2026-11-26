@@ -33,7 +33,7 @@ rightsizing/mirror/     GitOps 미러 (clean, scan, plan, run)
 deploy/                 Kustomize 배포 manifest (CronJob, RBAC, NetworkPolicy, ConfigMap, alerts, mirror/)
 deploy-legacy-sidecar/  k8s 1.28 이하용 overlay
 examples/gitops/        manifest repo 구조 예시와 ArgoCD Application 예시
-scripts/                알림 규칙 생성, 클러스터 검증, sidecar wrapper
+scripts/                namespace별 RBAC·알림 규칙 생성, 클러스터 검증, sidecar wrapper
 tests/                  단위/통합 테스트 (fake Prometheus/LLM/kubectl-ai/k8s, 실제 git, helm, kustomize, promtool)
 docs/                   kubectl-ai 검증 기록, 설계 문서(docs/design: 스펙과 합의된 계획)
 ```
@@ -73,13 +73,30 @@ CronJob pod (ns rightsizing, SA rightsizing-reader: read-only)
 
 ### 정책 (ConfigMap에서 변경 가능)
 
+기본 정책은 아래와 같습니다. namespace마다 `policies`에서 바꾸거나 추가할 수 있습니다.
+
 | | inference (보수적) | development (공격적) |
 |---|---|---|
 | CPU/메모리 request | P95 × 1.3 | P95 × 1.1 |
 | 메모리 limit | max × 1.5 | max × 1.2 |
 | 1회 최대 축소 / 증가 | 25% / ×2 | 50% / ×2 |
 
-두 namespace에 공통으로 적용되는 규칙:
+### 대상 namespace 바꾸기
+
+대상 namespace는 ConfigMap(`deploy/configmap.yaml`)의 `namespaces`로 정합니다. 기본값은 `inference`, `development`입니다.
+
+1. `namespaces`에 namespace를 넣고, 같은 이름으로 `policies` 항목을 하나씩 추가합니다. 정책이 없는 namespace는 설정 검증에서 거부됩니다.
+2. 미러 대상은 `mirror.namespaces`로 정합니다. `namespaces`의 부분집합이어야 하고, 생략하면 `namespaces`와 같은 목록을 씁니다.
+3. RBAC와 AppProject, 알림 규칙을 다시 생성한 뒤 배포합니다. Role은 namespace마다 따로 있어야 해서 ConfigMap만 바꿔서는 권한이 따라가지 않습니다.
+   ```bash
+   python scripts/gen_namespaces.py   # deploy/rbac.yaml, deploy/mirror/rbac.yaml, appproject.yaml의 destinations
+   python scripts/gen_alerts.py       # recording rule과 OOM 알림의 namespace 정규식
+   kubectl apply -k deploy/
+   ```
+
+`kube-system`, `kube-public`, `kube-node-lease`, `argocd`, `rightsizing`은 설정과 관계없이 대상이 될 수 없습니다. namespace 이름은 DNS-1123 label이어야 합니다. 이 검사는 PromQL을 만들 때도 다시 적용됩니다.
+
+모든 대상 namespace에 공통으로 적용되는 규칙:
 - 변화가 10% 미만이면 무시합니다.
 - 데이터가 3일치 미만이면 건너뜁니다.
 - 축소하지 않는 경우: OOM이 있었거나 OOM 여부를 알 수 없으면 메모리를, throttling이 있었거나 throttling 여부를 알 수 없으면 CPU를 줄이지 않습니다.

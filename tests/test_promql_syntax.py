@@ -24,7 +24,7 @@ def all_queries():
 
 def test_generated_queries_parse(tmp_path):
     rules = [{"record": f"test:q{i}", "expr": q} for i, q in enumerate(all_queries())]
-    rules += pq.recording_rules()
+    rules += pq.recording_rules(["inference", "development"])
     path = tmp_path / "rules.json"
     path.write_text(json.dumps({"groups": [{"name": "t", "rules": rules}]}))
     proc = subprocess.run(["promtool", "check", "rules", str(path)], capture_output=True, text=True)
@@ -57,7 +57,7 @@ def test_ownership_join_semantics(tmp_path):
                                                     'workload_kind="Deployment"}', "value": 1}]},
         ]}]}
     (tmp_path / "rules.json").write_text(json.dumps({"groups": [{"name": "rs", "interval": "1m",
-                                                                  "rules": pq.recording_rules()}]}))
+                                                                  "rules": pq.recording_rules(["inference", "development"])}]}))
     (tmp_path / "test.json").write_text(json.dumps(tests))
     proc = subprocess.run(["promtool", "test", "rules", "test.json"], cwd=tmp_path, capture_output=True, text=True)
     assert proc.returncode == 0, proc.stdout + proc.stderr

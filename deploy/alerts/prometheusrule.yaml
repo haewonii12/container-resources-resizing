@@ -48,7 +48,7 @@ spec:
           annotations:
             summary: gitops-mirror CronJob has not succeeded for 2 days
         - alert: TargetWorkloadOOM
-          expr: increase(kube_pod_container_status_restarts_total{namespace=~"inference|development"}[30m]) > 0 and on (namespace, pod, container) kube_pod_container_status_last_terminated_reason{namespace=~"inference|development",reason="OOMKilled"} == 1
+          expr: increase(kube_pod_container_status_restarts_total{namespace=~"development|inference"}[30m]) > 0 and on (namespace, pod, container) kube_pod_container_status_last_terminated_reason{namespace=~"development|inference",reason="OOMKilled"} == 1
           labels:
             severity: warning
           annotations:

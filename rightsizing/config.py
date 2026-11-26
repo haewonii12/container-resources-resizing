@@ -11,10 +11,21 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 from ruamel.yaml import YAML
 
-from . import ALLOWED_NAMESPACES
+from . import DEFAULT_NAMESPACES, namespace_error
 
 DEFAULT_CONFIG_PATH = "/etc/rightsizing/config.yaml"
 DEFAULT_SECRET_DIR = "/var/run/secrets/rightsizing"
+
+
+def _check_namespaces(value: list[str], field: str) -> list[str]:
+    if not value:
+        raise ValueError(f"{field}: at least one namespace is required")
+    errors = [e for e in (namespace_error(ns) for ns in value) if e]
+    if errors:
+        raise ValueError(f"{field}: " + "; ".join(errors))
+    if len(set(value)) != len(value):
+        raise ValueError(f"{field}: duplicate namespaces")
+    return value
 
 
 class NamespacePolicy(BaseModel):
@@ -73,7 +84,7 @@ class ArgoCDConfig(BaseModel):
 
 
 class MirrorConfig(BaseModel):
-    namespaces: list[str] = Field(default_factory=lambda: ["inference", "development"])
+    namespaces: list[str] = Field(default_factory=lambda: list(DEFAULT_NAMESPACES))
     argocd_project: str = "gitops-mirror"
     destination_server: str = "https://kubernetes.default.svc"
     app_name_template: str = "{name}"
@@ -90,10 +101,7 @@ class MirrorConfig(BaseModel):
     @field_validator("namespaces")
     @classmethod
     def _mirror_ns_allowed(cls, value: list[str]) -> list[str]:
-        bad = sorted(set(value) - ALLOWED_NAMESPACES)
-        if bad:
-            raise ValueError(f"mirror.namespaces outside the hard allowlist: {bad}")
-        return value
+        return _check_namespaces(value, "mirror.namespaces")
 
 
 class ManualMapping(BaseModel):
@@ -105,7 +113,7 @@ class ManualMapping(BaseModel):
 
 
 class Config(BaseModel):
-    namespaces: list[str] = Field(default_factory=lambda: ["inference", "development"])
+    namespaces: list[str] = Field(default_factory=lambda: list(DEFAULT_NAMESPACES))
     policies: dict[str, NamespacePolicy] = Field(default_factory=lambda: {
         "inference": NamespacePolicy(request_multiplier=1.3, mem_limit_multiplier=1.5, max_shrink=0.25,
                                      label="inference (conservative)"),
@@ -131,12 +139,7 @@ class Config(BaseModel):
     @field_validator("namespaces")
     @classmethod
     def _namespaces_allowed(cls, value: list[str]) -> list[str]:
-        bad = sorted(set(value) - ALLOWED_NAMESPACES)
-        if bad:
-            raise ValueError(f"namespaces outside the hard allowlist {sorted(ALLOWED_NAMESPACES)}: {bad}")
-        if not value:
-            raise ValueError("at least one namespace is required")
-        return value
+        return _check_namespaces(value, "namespaces")
 
     @model_validator(mode="after")
     def _cross_checks(self) -> "Config":
@@ -148,6 +151,11 @@ class Config(BaseModel):
         missing = [ns for ns in self.namespaces if ns not in self.policies]
         if missing:
             raise ValueError(f"no policy defined for namespaces: {missing}")
+        if "namespaces" not in self.mirror.model_fields_set:  # unset: the mirror covers the same namespaces
+            self.mirror.namespaces = list(self.namespaces)
+        outside = sorted(set(self.mirror.namespaces) - set(self.namespaces))
+        if outside:  # the mirror registers apps for rightsizing: it must not reach beyond `namespaces`
+            raise ValueError(f"mirror.namespaces must be a subset of namespaces: {outside}")
         return self
 
     def policy_for(self, namespace: str) -> NamespacePolicy:

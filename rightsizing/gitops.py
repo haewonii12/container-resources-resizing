@@ -61,6 +61,7 @@ class GitRepo:
     workdir: Path
     env: dict[str, str]
     timeout: float = 120
+    identity: tuple[str, ...] = ()  # set by commit(); reused by push() when it has to rebase
 
     def run(self, *args: str, input_text: str | None = None, check: bool = True) -> subprocess.CompletedProcess:
         try:
@@ -87,8 +88,8 @@ class GitRepo:
             self.run("add", "-A", "--", *present)
         if self.run("diff", "--cached", "--quiet", check=False).returncode == 0:
             return None
-        self.run("-c", f"user.name={author_name}", "-c", f"user.email={author_email}",
-                 "commit", "--no-verify", "-F", "-", input_text=message)
+        self.identity = ("-c", f"user.name={author_name}", "-c", f"user.email={author_email}")
+        self.run(*self.identity, "commit", "--no-verify", "-F", "-", input_text=message)
         return self.head()
 
     def head(self) -> str:
@@ -113,7 +114,8 @@ class GitRepo:
             rejected = "rejected" in proc.stderr or "non-fast-forward" in proc.stderr or "fetch first" in proc.stderr
             if not rejected or attempt == retries:
                 raise GitError(f"git push failed: {proc.stderr.strip()[-400:]}")
-            rebase = self.run("pull", "--rebase", "origin", branch, check=False)
+            # the rebase rewrites our commits, so it needs the committer identity used by commit()
+            rebase = self.run(*self.identity, "pull", "--rebase", "origin", branch, check=False)
             if rebase.returncode != 0:
                 self.run("rebase", "--abort", check=False)
                 raise GitError(f"rebase onto origin/{branch} failed: {rebase.stderr.strip()[-400:]}")

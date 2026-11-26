@@ -125,7 +125,7 @@ def test_query_builder_refuses_other_namespaces():
 
 
 def test_recording_rule_names_match_client():
-    names = {r["record"] for r in pq.recording_rules()}
+    names = {r["record"] for r in pq.recording_rules(["inference", "development"])}
     assert {pq.RR_CPU, pq.RR_MEM, "rightsizing:pod_workload:owner"} <= names
 
 
