@@ -86,11 +86,15 @@ def test_push_disabled_marks_record_not_pushed(renv):
     assert data["pushed"] is False and data["push_enabled"] is False and w["web"]["status"] == "committed"
 
 
-def test_failure_record_on_early_return(renv):
-    report, _, _ = run(renv, prom_down=True)
+@pytest.mark.parametrize("failure, kwargs", [("prometheus", {"prom_down": True}), ("mcp", {"mcp_down": True}),
+                                             ("git_clone", {"bad_clone": True})])
+def test_failure_record_on_early_return(renv, failure, kwargs):
+    if kwargs.pop("bad_clone", False):
+        renv["cfg"].git.url = f"file://{renv['tmp']}/missing-manifests.git"
+    report, _, _ = run(renv, **kwargs)
     assert report.exit_code == EXIT_INFRA
     data, _ = record(renv)
-    assert data["run_status"] == "failed:prometheus" and data["exit_code"] == EXIT_INFRA
+    assert data["run_status"] == f"failed:{failure}" and data["exit_code"] == EXIT_INFRA
 
 
 def test_no_record_for_dry_run_or_only(renv):

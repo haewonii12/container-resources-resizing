@@ -69,13 +69,17 @@ def needs_compute(entry: dict | None) -> bool:
     return status.startswith("skipped:") and status.split(":", 1)[1] in DISCOVERY_SKIPS
 
 
+def containers_of(dep: dict) -> dict[str, ContainerResources]:
+    pod = ((dep.get("spec") or {}).get("template") or {}).get("spec") or {}
+    return {c["name"]: ContainerResources.from_k8s(c.get("resources")) for c in pod.get("containers") or []}
+
+
 def compute_proposal(cfg: Config, dep: dict, usage: dict, hpas: list[dict], limitranges: list[dict]) -> list[dict]:
     """Same policy call as rightsizing (main.py process): recommend_container with the same PolicyParams.
     Revert suppression only applies to judged workloads (it needs the manifest repo history)."""
     meta = dep["metadata"]
     ref = WorkloadRef(meta["namespace"], "Deployment", meta["name"])
-    containers = {c["name"]: ContainerResources.from_k8s(c.get("resources"))
-                  for c in ((dep.get("spec") or {}).get("template") or {}).get("spec", {}).get("containers") or []}
+    containers = containers_of(dep)
     params = PolicyParams(cfg.min_days, cfg.min_change, cfg.throttle_threshold, cfg.cpu_limit_mode)
     policy = cfg.policy_for(ref.namespace)
     recs = [recommend_container(c, containers[c], usage[c], policy, params, limitrange_bounds(limitranges),
@@ -149,9 +153,13 @@ def build_table(deployments: list[dict], record: dict | None, computed: dict[str
             status, llm, proposal = _status(entry, record), _llm(entry), entry.get("proposal") or []
         changed = [p for p in proposal if p.get("changed")]
         if not changed:
-            detail = entry.get("detail") if entry and not needs_compute(entry) else ""
+            judged = entry is not None and not needs_compute(entry)
+            detail = entry.get("detail") if judged else ""
             reasons = sorted({_reason_text(p, min_days) for p in proposal if p.get("reason")})
-            label = entry["status"] if entry and not needs_compute(entry) else "no_change"
+            label = entry["status"] if judged else "no_change"
+            if label == "withdrawn":  # proposal withdrawn back to live values: nothing left to sync
+                sha = ((entry.get("pending") or {}).get("sha") or "")[:7]
+                label, detail = "제안 철회", f"승인 대기 중이던 {sha} 철회 — 현재 값 유지" if sha else "현재 값 유지"
             table.skips.append(SkipRow(ns, name, f"{label}: {detail or ', '.join(reasons) or '변경 없음'}"))
             continue
         table.with_proposals += 1

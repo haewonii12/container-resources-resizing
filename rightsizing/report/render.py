@@ -10,7 +10,7 @@ from .changes import ChangeTable
 from .nodes import FailoverRow, NodeRow
 
 LIMITATION = ("N-1 판정은 같은 role(node-role.kubernetes.io/<role>) 노드끼리만, CPU·메모리·GPU request와 "
-              "pod 수, taint/toleration으로 큰 pod부터 배치해 봅니다. nodeSelector·affinity·topology spread·"
+              "pod 수, taint/toleration으로 큰 pod부터 배치해 봅니다(cordon·NotReady 노드는 받는 쪽에서 제외). nodeSelector·affinity·topology spread·"
               "PDB·우선순위는 반영하지 않습니다.")
 _LABEL = {"cpu.request": "cpu.req", "cpu.limit": "cpu.lim", "memory.request": "mem.req", "memory.limit": "mem.lim"}
 
@@ -86,7 +86,8 @@ def render_markdown(r: DailyReport) -> str:
         use_cpu = _cores(n.usage.cpu) if n.usage else "n/a"
         use_mem = _gi(n.usage.memory) if n.usage else "n/a"
         notes = [x for x in (("N-1 제외 (taint 있는 control-plane)" if not n.analyzed else ""),
-                             ("cordon" if n.cordoned else ""), ", ".join(n.taints)) if x]
+                             ("cordon" if n.cordoned else ""), ("NotReady" if not n.ready else ""),
+                             ", ".join(n.taints)) if x]
         out.append(f"| {n.name} | {n.role} | {use_cpu} / {_cores(n.requests.cpu)} / {_cores(n.allocatable.cpu)} "
                    f"({n.requests.cpu / n.allocatable.cpu * 100 if n.allocatable.cpu else 0:.0f}%) "
                    f"| {use_mem} / {_gi(n.requests.memory)} / {_gi(n.allocatable.memory)} "

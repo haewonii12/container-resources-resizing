@@ -93,8 +93,7 @@ class Runner:
         record = runrecord.build_record(
             self.cfg, run_id=self.run_id, started_at=deps.now, finished_at=datetime.now(timezone.utc),
             run_status=report.run_status, exit_code=report.exit_code, pushed=report.pushed > 0,
-            outcomes=report.outcomes)
-        record["push_failed"] = report.push_failed
+            outcomes=report.outcomes, push_failed=report.push_failed)
         token = deps.secrets.path("gitea_token")
         try:
             sha = runrecord.write_record(self.cfg, record, deps.workdir, token if token.exists() else None)

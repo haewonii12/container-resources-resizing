@@ -122,3 +122,10 @@ def test_unplaced_pods_listed_largest_first():
     r = simulate_failover([node("n")], pods, P)[0]
     assert r.result == "단일 노드" and [u.split(" ")[0] for u in r.unplaced] == [
         "default/big", "default/mid", "default/tiny"]
+
+
+def test_notready_node_is_not_a_target():
+    sick = node("b")
+    sick["status"]["conditions"] = [{"type": "Ready", "status": "False"}]
+    rows = by_node(simulate_failover([node("a"), sick], [pod("x", "a")], P))
+    assert rows["a"].targets == [] and rows["a"].result == "단일 노드"

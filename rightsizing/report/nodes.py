@@ -131,6 +131,7 @@ class NodeRow:
     max_pods: int
     analyzed: bool  # False: tainted control-plane (excluded from N-1)
     cordoned: bool
+    ready: bool = True
     taints: list[str] = field(default_factory=list)
 
 
@@ -150,6 +151,12 @@ def _name(obj: dict) -> str:
     return (obj.get("metadata") or {}).get("name", "")
 
 
+def _ready(node: dict) -> bool:
+    conds = (node.get("status") or {}).get("conditions") or []
+    ready = next((c for c in conds if c.get("type") == "Ready"), None)
+    return ready is None or ready.get("status") == "True"  # no conditions (tests/fakes) counts as Ready
+
+
 def node_rows(nodes: list[dict], pods: list[dict], usage: dict[str, Res] | None, prefix: str) -> list[NodeRow]:
     rows = []
     for node in sorted(nodes, key=_name):
@@ -162,6 +169,7 @@ def node_rows(nodes: list[dict], pods: list[dict], usage: dict[str, Res] | None,
             pods=len(on), max_pods=int(parse_number(alloc.get("pods", "110"))),
             analyzed=not is_tainted_control_plane(node, prefix),
             cordoned=bool((node.get("spec") or {}).get("unschedulable")),
+            ready=_ready(node),
             taints=[f"{t.get('key')}:{t.get('effect')}" for t in _taints(node)]))
     return rows
 
@@ -174,7 +182,8 @@ def simulate_failover(nodes: list[dict], pods: list[dict], prefix: str) -> list[
     for row in rows:
         if not row.analyzed:
             continue
-        targets = [r for r in rows if r.analyzed and not r.cordoned and r.name != row.name and r.role == row.role]
+        targets = [r for r in rows if r.analyzed and not r.cordoned and r.ready
+                   and r.name != row.name and r.role == row.role]
         movable = sorted((p for p in active if p["spec"]["nodeName"] == row.name and is_movable(p)),
                          key=lambda p: (pod_requests(p).gpu, pod_requests(p).memory, pod_requests(p).cpu),
                          reverse=True)  # largest first: placement order and the order unplaced pods are listed

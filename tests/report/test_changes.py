@@ -65,7 +65,7 @@ def test_status_mapping_from_record():
     assert status_of(t, "b") == "제안 교체"
     assert status_of(t, "c") == "보류 (llm_hold)" and {r.deployment: r.llm for r in t.rows}["c"] == "hold: 주간 배치"
     assert status_of(t, "d") == "승인 대기 (3일, fedcba9)"
-    assert [s.deployment for s in t.skips] == ["e"]
+    assert [(s.deployment, s.reason) for s in t.skips] == [("e", "제안 철회: 승인 대기 중이던 x 철회 — 현재 값 유지")]
 
 
 def test_push_states():

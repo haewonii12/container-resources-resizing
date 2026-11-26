@@ -55,6 +55,7 @@ def test_record_fields():
                        exit_code=0, pushed=False, outcomes=outcomes())
     assert rec["record_version"] == RECORD_VERSION == 1
     assert rec["push_enabled"] is False and rec["pushed"] is False and rec["exit_code"] == 0
+    assert rec["push_failed"] is False
     by = {w["workload"]: w for w in rec["workloads"]}
     held = by["development/Deployment/web"]
     assert held["llm_decision"] == "hold" and held["llm_notes"] == "배치 때 급증"

@@ -15,10 +15,10 @@ from typing import Callable, Protocol
 
 from ..config import Config
 from ..gitops import GitRepo
-from ..models import ContainerResources, WorkloadRef
+from ..models import WorkloadRef
 from ..prom import PromClient, collect_usage
 from ..runrecord import RECORD_VERSION, local_date, record_path
-from .changes import build_table, compute_proposal, needs_compute, record_entries, workload_key
+from .changes import build_table, compute_proposal, containers_of, needs_compute, record_entries, workload_key
 from .nodes import Res, node_rows, simulate_failover
 from .render import DailyReport, render_json, render_markdown
 
@@ -91,8 +91,7 @@ def _computed(cfg: Config, kube: ReportKube, prom: PromClient, deps_by_ns: dict[
             meta = dep["metadata"]
             ref = WorkloadRef(ns, "Deployment", meta["name"])
             try:
-                containers = {c["name"]: ContainerResources.from_k8s(c.get("resources")) for c in
-                              ((dep.get("spec") or {}).get("template") or {}).get("spec", {}).get("containers") or []}
+                containers = containers_of(dep)
                 cpu_limited = {c: r.get("cpu.limit") is not None for c, r in containers.items()}
                 usage, _, _ = collect_usage(prom, ref, cpu_limited, cfg.window_days,
                                             cfg.prometheus.use_recording_rules)

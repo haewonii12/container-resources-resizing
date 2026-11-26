@@ -15,7 +15,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .config import Config
-from .gitops import GitError, PathGuardError, clone, git_env, write_askpass
+from .gitops import clone, git_env, write_askpass
 from .models import Outcome
 
 log = logging.getLogger("rightsizing.runrecord")
@@ -33,7 +33,7 @@ def record_path(day: date) -> str:
 
 
 def build_record(cfg: Config, *, run_id: str, started_at: datetime, finished_at: datetime, run_status: str,
-                 exit_code: int, pushed: bool, outcomes: list[Outcome]) -> dict:
+                 exit_code: int, pushed: bool, outcomes: list[Outcome], push_failed: bool = False) -> dict:
     """Pure: the JSON document for one run (dated in the report timezone)."""
     tz = cfg.report.timezone if cfg.report else "Asia/Seoul"
     return {
@@ -46,6 +46,7 @@ def build_record(cfg: Config, *, run_id: str, started_at: datetime, finished_at:
         "exit_code": exit_code,
         "push_enabled": cfg.git.push_enabled,
         "pushed": pushed,
+        "push_failed": push_failed,
         "namespaces": list(cfg.namespaces),
         "workloads": [asdict(o) for o in sorted(outcomes, key=lambda o: o.workload)],
     }
@@ -98,11 +99,8 @@ def write_record(cfg: Config, record: dict, workdir: Path, token_file: Path | No
     target = repo.workdir / rel
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(dumps(record), encoding="utf-8")
-    try:
-        sha = repo.commit([rel], f"run record {record['date']} ({record['run_id']}, {record['run_status']})",
-                          cfg.git.author_name, cfg.git.author_email, allowed_prefix=RUNS_DIR)
-    except PathGuardError as exc:  # cannot happen with record_path(), kept as a hard guard
-        raise GitError(str(exc)) from exc
+    sha = repo.commit([rel], f"run record {record['date']} ({record['run_id']}, {record['run_status']})",
+                      cfg.git.author_name, cfg.git.author_email, allowed_prefix=RUNS_DIR)
     if sha is not None:
         repo.push(cfg.report.branch)
     return sha
