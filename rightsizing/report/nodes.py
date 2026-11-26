@@ -175,7 +175,9 @@ def simulate_failover(nodes: list[dict], pods: list[dict], prefix: str) -> list[
         if not row.analyzed:
             continue
         targets = [r for r in rows if r.analyzed and not r.cordoned and r.name != row.name and r.role == row.role]
-        movable = [p for p in active if p["spec"]["nodeName"] == row.name and is_movable(p)]
+        movable = sorted((p for p in active if p["spec"]["nodeName"] == row.name and is_movable(p)),
+                         key=lambda p: (pod_requests(p).gpu, pod_requests(p).memory, pod_requests(p).cpu),
+                         reverse=True)  # largest first: placement order and the order unplaced pods are listed
         need = sum((pod_requests(p) for p in movable), Res())
         free = {t.name: t.allocatable - t.requests for t in targets}
         slots = {t.name: t.max_pods - t.pods for t in targets}
@@ -186,9 +188,7 @@ def simulate_failover(nodes: list[dict], pods: list[dict], prefix: str) -> list[
             fr.unplaced = [_pod_label(p) for p in movable]
             out.append(fr)
             continue
-        order = sorted(movable, key=lambda p: (pod_requests(p).gpu, pod_requests(p).memory, pod_requests(p).cpu),
-                       reverse=True)
-        for pod in order:
+        for pod in movable:
             req = pod_requests(pod)
             dest = next((t for t in fr.targets if slots[t] >= 1 and req.fits_in(free[t])
                          and tolerates(pod, by_name[t])), None)

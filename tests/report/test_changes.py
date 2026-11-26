@@ -104,3 +104,11 @@ def test_summary_savings_requests_times_replicas():
     assert t.with_proposals == 1 and len(t.rows) == 3
     assert t.savings_cpu_m == 2700 and t.savings_mem_b == 12 * GI
     assert requests_savings(p, 3) == (2700, 12 * GI)
+
+
+def test_insufficient_data_reason_shows_collected_hours():
+    rows = [{"container": "c", "field": "*", "current": None, "proposed": None, "changed": False, "direction": None,
+             "basis": None, "reason": "insufficient_data", "p95": None, "max": None, "coverage_h": 10.0}]
+    t = build_table([dep("a")], {"workloads": [entry("a", "skipped:no_argocd_app")]},
+                    {"development/Deployment/a": rows}, min_days=3)
+    assert t.skips[0].reason == "no_change: insufficient_data (수집 10h / 필요 72h)"

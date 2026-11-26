@@ -115,3 +115,10 @@ def test_node_rows():
     assert r.requests == Res(1500, 2 * GI, 1) and r.allocatable == Res(8000, 32 * GI, 1)
     assert r.usage == Res(700, 3 * GI, 0) and r.pods == 1 and r.max_pods == 110
     assert node_rows([node("b")], [], None, P)[0].usage is None
+
+
+def test_unplaced_pods_listed_largest_first():
+    pods = [pod("tiny", "n", cpu="0", mem="0"), pod("big", "n", cpu="4", mem="16Gi"), pod("mid", "n", mem="4Gi")]
+    r = simulate_failover([node("n")], pods, P)[0]
+    assert r.result == "단일 노드" and [u.split(" ")[0] for u in r.unplaced] == [
+        "default/big", "default/mid", "default/tiny"]

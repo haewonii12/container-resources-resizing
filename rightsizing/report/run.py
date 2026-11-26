@@ -116,7 +116,7 @@ def build_report(cfg: Config, kube: ReportKube, prom: PromClient, record: dict |
         usage, metrics = None, False
     entries = record_entries(record)
     table = build_table([d for deps in deps_by_ns.values() for d in deps], record,
-                        _computed(cfg, kube, prom, deps_by_ns, entries))
+                        _computed(cfg, kube, prom, deps_by_ns, entries), cfg.min_days)
     header = {k: v for k, v in (record or {}).items() if k != "workloads"} or None
     return DailyReport(date=today.isoformat(), generated_at=f"{today.isoformat()} ({cfg.report.timezone})",
                        namespaces=list(cfg.namespaces), record=header, banners=banners, table=table,

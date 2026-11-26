@@ -57,7 +57,8 @@ def proposal_row(container, fname, current, proposed, changed, direction, basis,
     u = getattr(usage, res, None) if usage is not None else None
     return {"container": container, "field": fname, "current": current, "proposed": proposed,
             "changed": changed, "direction": direction, "basis": basis, "reason": reason,
-            "p95": u.p95 if u else None, "max": u.max if u else None}
+            "p95": u.p95 if u else None, "max": u.max if u else None,
+            "coverage_h": getattr(usage, "coverage_hours", None)}
 
 
 def proposal_rows(containers: dict, recs: list, usage: dict) -> list[dict]:

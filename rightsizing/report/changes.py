@@ -111,11 +111,19 @@ def _llm(entry: dict | None) -> str:
     return f"{entry['llm_decision']}: {notes}" if notes else entry["llm_decision"]
 
 
+def _reason_text(p: dict, min_days: int | None) -> str:
+    reason = p["reason"]
+    if reason == "insufficient_data" and p.get("coverage_h") is not None and min_days:
+        return f"insufficient_data (수집 {p['coverage_h']:.0f}h / 필요 {min_days * 24}h)"
+    return reason
+
+
 def _pct(cur, new):
     return None if not cur else (new - cur) / cur * 100
 
 
-def build_table(deployments: list[dict], record: dict | None, computed: dict[str, list[dict]]) -> ChangeTable:
+def build_table(deployments: list[dict], record: dict | None, computed: dict[str, list[dict]],
+                min_days: int | None = None) -> ChangeTable:
     entries = record_entries(record)
     table = ChangeTable()
     for dep in sorted((d for d in deployments if d.get("kind", "Deployment") == "Deployment"),
@@ -142,7 +150,7 @@ def build_table(deployments: list[dict], record: dict | None, computed: dict[str
         changed = [p for p in proposal if p.get("changed")]
         if not changed:
             detail = entry.get("detail") if entry and not needs_compute(entry) else ""
-            reasons = sorted({p["reason"] for p in proposal if p.get("reason")})
+            reasons = sorted({_reason_text(p, min_days) for p in proposal if p.get("reason")})
             label = entry["status"] if entry and not needs_compute(entry) else "no_change"
             table.skips.append(SkipRow(ns, name, f"{label}: {detail or ', '.join(reasons) or '변경 없음'}"))
             continue
