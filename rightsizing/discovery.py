@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import Protocol
 
 from . import quantity
-from .config import Config
+from .config import Config, normalize_repo  # noqa: F401 (normalize_repo re-exported)
 from .manifest import AppSource
 from .models import ContainerResources, LimitRangeBounds, WorkloadRef
 
@@ -45,14 +44,6 @@ class Skipped:
     ref: WorkloadRef
     reason: str
     detail: str = ""
-
-
-def normalize_repo(url: str) -> str:
-    url = url.strip().lower()
-    url = re.sub(r"^[a-z+]+://", "", url)
-    url = re.sub(r"^[^@/]+@", "", url)
-    url = url.replace(":", "/", 1) if re.match(r"^[^/]+:[^0-9]", url) else url
-    return url.removesuffix("/").removesuffix(".git")
 
 
 def resolve_app(workload: dict, cfg: Config) -> tuple[str, str] | None:

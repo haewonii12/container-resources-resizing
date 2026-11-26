@@ -22,8 +22,8 @@ def alerts(namespaces: list[str]) -> list[dict]:
     ns_re = "|".join(sorted(namespaces))
     return [
         {"alert": "RightsizingJobFailed",
-         "expr": 'kube_job_status_failed{namespace="rightsizing",job_name!~"gitops-mirror.*"} > 0 and on (job_name) '
-                 '(time() - kube_job_status_start_time{namespace="rightsizing",job_name!~"gitops-mirror.*"} < 86400)',
+         "expr": 'kube_job_status_failed{namespace="rightsizing",job_name!~"gitops-mirror.*|daily-report.*"} > 0 and on (job_name) '
+                 '(time() - kube_job_status_start_time{namespace="rightsizing",job_name!~"gitops-mirror.*|daily-report.*"} < 86400)',
          "labels": {"severity": "warning"},
          "annotations": {"summary": "rightsizing job failed (exit 2 = infrastructure, exit 3 = security refusal)",
                          "description": "Check the job logs: kubectl -n rightsizing logs job/{{ $labels.job_name }} -c agent"}},
@@ -45,6 +45,17 @@ def alerts(namespaces: list[str]) -> list[dict]:
                  '> 2 * 86400',
          "labels": {"severity": "warning"},
          "annotations": {"summary": "gitops-mirror CronJob has not succeeded for 2 days"}},
+        {"alert": "DailyReportJobFailed",
+         "expr": 'kube_job_status_failed{namespace="rightsizing",job_name=~"daily-report.*"} > 0 and on (job_name) '
+                 '(time() - kube_job_status_start_time{namespace="rightsizing",job_name=~"daily-report.*"} < 86400)',
+         "labels": {"severity": "warning"},
+         "annotations": {"summary": "daily-report job failed (exit 2 = Prometheus, apiserver or report repo)",
+                         "description": "kubectl -n rightsizing logs job/{{ $labels.job_name }}"}},
+        {"alert": "DailyReportJobNotRun",
+         "expr": 'time() - kube_cronjob_status_last_successful_time{namespace="rightsizing",cronjob="daily-report"} '
+                 '> 2 * 86400',
+         "labels": {"severity": "warning"},
+         "annotations": {"summary": "daily-report CronJob has not succeeded for 2 days"}},
         {"alert": "TargetWorkloadOOM",
          "expr": 'increase(kube_pod_container_status_restarts_total{namespace=~"' + ns_re + '"}[30m]) > 0 '
                  'and on (namespace, pod, container) '

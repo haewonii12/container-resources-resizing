@@ -1,0 +1,35 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: daily-report
+  namespace: rightsizing
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: daily-report
+  policyTypes: ["Ingress", "Egress"]
+  ingress: []
+  egress:
+    - to:  # DNS
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    - ports:  # kube-apiserver (nodes, pods, metrics.k8s.io via the aggregation layer)
+        - {protocol: TCP, port: 443}
+        - {protocol: TCP, port: 6443}
+    - to:  # Prometheus
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: PROMETHEUS_NAMESPACE_PLACEHOLDER
+      ports:
+        - {protocol: TCP, port: 9090}
+    - to:  # in-cluster Gitea (report repo)
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: gitea
+      ports:
+        - {protocol: TCP, port: 3000}

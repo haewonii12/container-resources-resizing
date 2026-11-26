@@ -15,6 +15,12 @@ resources:
   - mirror/validatingadmissionpolicy.yaml
   - mirror/cronjob.yaml
   - mirror/networkpolicy.yaml
+  # Daily report (read-only; the only ClusterRole; see README "Daily report")
+  - report/serviceaccount.yaml
+  - report/clusterrole.yaml
+  - report/rbac.yaml
+  - report/cronjob.yaml
+  - report/networkpolicy.yaml
 images:
   - name: AGENT_IMAGE_PLACEHOLDER
     newName: docker.io/haewon123/rightsizing-agent

@@ -66,6 +66,15 @@ data:
       max_delete_ratio: 0.3
       min_apps_for_ratio: 5
       skip_helm: true
+    report:
+      # Daily report + rightsizing run record. MUST be a different repo from git.url; the bot needs write on it.
+      # Create the repo (and the bot's write permission) BEFORE enabling this, or rightsizing exits 2.
+      git_url: http://GITEA_HOST_PLACEHOLDER/ORG_PLACEHOLDER/REPORT_REPO_URL_PLACEHOLDER.git
+      branch: main
+      node_role_prefix: node-role.kubernetes.io/   # N-1 moves pods only between nodes of the same role
+      runs_enabled: true          # rightsizing pushes runs/YYYY/MM/<date>.json (independent of git.push_enabled)
+      wait_for_record_minutes: 10
+      timezone: Asia/Seoul
     manual_mappings: []
     # - workload: development/Deployment/web
     #   values_file: values-dev.yaml

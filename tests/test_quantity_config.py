@@ -84,3 +84,20 @@ def test_config_accepts_any_namespace_with_a_policy():
                                  "mirror": {"namespaces": ["default"]}})
     assert cfg.namespaces == ["default", "dify"] and cfg.mirror.namespaces == ["default"]
     assert cfg.policy_for("dify").max_shrink == 0.25
+
+
+@pytest.mark.parametrize("report_url", ["http://gitea/admin/resource.git", "http://GITEA/admin/resource/",
+                                        "https://bot@gitea/admin/resource"])
+def test_report_repo_must_differ_from_manifest_repo(report_url):
+    with pytest.raises(ValidationError):
+        Config.model_validate({"git": {"url": "http://gitea/admin/resource.git"}, "report": {"git_url": report_url}})
+
+
+def test_report_config_defaults_and_timezone():
+    cfg = Config.model_validate({"git": {"url": "http://gitea/admin/resource.git"},
+                                 "report": {"git_url": "http://gitea/admin/report.git"}})
+    assert cfg.report.timezone == "Asia/Seoul" and cfg.report.node_role_prefix == "node-role.kubernetes.io/"
+    assert cfg.records_enabled and Config().records_enabled is False
+    assert cfg.timeouts.reserve(True, True) == cfg.timeouts.reserve(True) + 2 * cfg.timeouts.git
+    with pytest.raises(ValidationError):
+        Config.model_validate({"report": {"git_url": "http://gitea/admin/report.git", "timezone": "Mars/Base"}})

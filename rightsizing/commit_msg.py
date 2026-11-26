@@ -101,10 +101,23 @@ def summary_ko(info: CommitInfo) -> str:
     return f"{body} (최근 사용량 P95/max 기준)"
 
 
+def requests_savings(changes, replicas: float) -> tuple[float, float]:
+    """(cpu millicores, memory bytes) freed by request changes x replicas. Items are FieldChange-like
+    (.field/.old/.new) or run-record proposal rows ({"field", "current", "proposed"})."""
+    keys = {"old": "current", "new": "proposed", "field": "field"}
+
+    def get(c, k):
+        return c[keys[k]] if isinstance(c, dict) else getattr(c, k)
+    cpu = sum(get(c, "old") - get(c, "new") for c in changes
+              if get(c, "field") == "cpu.request" and get(c, "old") is not None) * replicas
+    mem = sum(get(c, "old") - get(c, "new") for c in changes
+              if get(c, "field") == "memory.request" and get(c, "old") is not None) * replicas
+    return cpu, mem
+
+
 def savings(info: CommitInfo) -> str:
     reps = info.avg_replicas if info.avg_replicas is not None else 1.0
-    cpu = sum((c.old - c.new) for c in info.changes if c.field == "cpu.request" and c.old is not None) * reps
-    mem = sum((c.old - c.new) for c in info.changes if c.field == "memory.request" and c.old is not None) * reps
+    cpu, mem = requests_savings(info.changes, reps)
     note = f"평균 replicas {reps:.1f}" if info.avg_replicas is not None else "replicas 정보 없음, 1로 계산"
     return f"CPU {cpu / 1000:.1f} cores, Memory {mem / quantity.GI:.1f} GiB (requests 기준, {note})"
 

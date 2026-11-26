@@ -14,11 +14,20 @@ DEPLOY = ROOT / "deploy"
 WRITE_VERBS = {"create", "update", "patch", "delete", "deletecollection", "escalate", "bind", "impersonate", "*"}
 
 
+def kustomize_cmd():
+    if shutil.which("kustomize"):
+        return ["kustomize", "build"]
+    if shutil.which("kubectl"):
+        return ["kubectl", "kustomize"]
+    return None
+
+
 @pytest.fixture(scope="module")
 def objects():
-    if not shutil.which("kustomize"):
+    cmd = kustomize_cmd()
+    if cmd is None:
         pytest.skip("kustomize missing")
-    out = subprocess.run(["kustomize", "build", str(DEPLOY)], capture_output=True, text=True, check=True).stdout
+    out = subprocess.run([*cmd, str(DEPLOY)], capture_output=True, text=True, check=True).stdout
     return [d for d in YAML(typ="safe").load_all(out) if d]
 
 
@@ -41,7 +50,8 @@ def test_renders_expected_resources(objects):
 
 def test_rbac_is_read_only_and_scoped(objects):
     roles = [r for r in by_kind(objects, "Role") if r["metadata"]["name"] != "gitops-mirror-apps"]  # see mirror test
-    assert not by_kind(objects, "ClusterRole") and not by_kind(objects, "ClusterRoleBinding")
+    # the only cluster-wide grant: the daily report (see test_daily_report_rbac)
+    assert [c["metadata"]["name"] for c in by_kind(objects, "ClusterRole")] == ["rightsizing-daily-report"]
     for role in roles:
         for rule in role["rules"]:
             assert not set(rule["verbs"]) & WRITE_VERBS, (role["metadata"], rule)
@@ -253,7 +263,8 @@ def test_mirror_networkpolicy(objects):
 def test_mirror_alerts_present():
     rules = (DEPLOY / "alerts/rules.yaml").read_text()
     assert "alert: MirrorJobFailed" in rules and "alert: MirrorJobNotRun" in rules
-    assert 'job_name!~"gitops-mirror.*"' in rules  # rightsizing alert does not double-fire
+    assert 'job_name!~"gitops-mirror.*|daily-report.*"' in rules  # rightsizing alert does not double-fire
+    assert "alert: DailyReportJobFailed" in rules and "alert: DailyReportJobNotRun" in rules
 
 
 def test_namespaced_rbac_is_generated_and_current():
@@ -281,3 +292,43 @@ def test_generators_follow_the_configmap_namespaces():
     proj = yaml.load(out["mirror/appproject.yaml"])
     assert [d["namespace"] for d in proj["spec"]["destinations"]] == ["default"]
     assert proj["spec"]["sourceRepos"] == ["MANIFEST_REPO_URL_PLACEHOLDER"]
+
+
+def test_daily_report_rbac(objects):
+    cr = named(objects, "ClusterRole", "rightsizing-daily-report")
+    for rule in cr["rules"]:
+        assert set(rule["verbs"]) <= {"get", "list", "watch"}, rule
+        assert not {"secrets", "configmaps"} & set(rule["resources"])
+    assert {(g, r) for rule in cr["rules"] for g in rule["apiGroups"] for r in rule["resources"]} == {
+        ("", "nodes"), ("", "pods"), ("metrics.k8s.io", "nodes"), ("metrics.k8s.io", "pods")}
+    bindings = by_kind(objects, "ClusterRoleBinding")
+    assert len(bindings) == 1 and bindings[0]["subjects"] == [
+        {"kind": "ServiceAccount", "name": "daily-report", "namespace": "rightsizing"}]
+    report_roles = [r for r in by_kind(objects, "Role") if r["metadata"]["name"] == "daily-report-reader"]
+    assert {r["metadata"]["namespace"] for r in report_roles} == {"inference", "development"}
+
+
+def test_daily_report_cronjob(objects):
+    cj, rs = named(objects, "CronJob", "daily-report"), named(objects, "CronJob", "rightsizing")
+    assert cj["spec"]["schedule"] == "0 5 * * *" and cj["spec"]["timeZone"] == "Asia/Seoul"
+    pod = cj["spec"]["jobTemplate"]["spec"]["template"]["spec"]
+    assert pod["serviceAccountName"] == "daily-report"
+    c = pod["containers"][0]
+    assert c["command"] == ["python", "-m", "rightsizing.report"] and c["securityContext"]["readOnlyRootFilesystem"]
+    secret = next(v for v in pod["volumes"] if v["name"] == "secrets")["secret"]
+    assert [i["key"] for i in secret["items"]] == ["gitea_token"]  # never the LLM key
+    # starts only after rightsizing's latest possible end (schedule + activeDeadlineSeconds)
+
+    def minutes(cron):
+        m, h = cron.split()[:2]
+        return int(h) * 60 + int(m)
+    rs_end = minutes(rs["spec"]["schedule"]) + rs["spec"]["jobTemplate"]["spec"]["activeDeadlineSeconds"] / 60
+    assert minutes(cj["spec"]["schedule"]) >= rs_end
+
+
+def test_daily_report_networkpolicy(objects):
+    np_ = named(objects, "NetworkPolicy", "daily-report")
+    assert np_["spec"]["ingress"] == [] and np_["spec"]["podSelector"]["matchLabels"] == {
+        "app.kubernetes.io/name": "daily-report"}
+    ports = {p["port"] for rule in np_["spec"]["egress"] for p in rule.get("ports", [])}
+    assert ports == {53, 443, 6443, 9090, 3000}

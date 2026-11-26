@@ -5,7 +5,7 @@ ConfigMap at runtime without granting the agent cluster-wide read, so after chan
 
     python scripts/gen_namespaces.py && python scripts/gen_alerts.py
 
-Writes deploy/rbac.yaml and deploy/mirror/rbac.yaml, and rewrites only `spec.destinations` of
+Writes deploy/rbac.yaml, deploy/mirror/rbac.yaml and deploy/report/rbac.yaml, and rewrites only `spec.destinations` of
 deploy/mirror/appproject.yaml (its sourceRepos and comments are kept). tests/test_deploy.py checks they are current.
 """
 
@@ -139,6 +139,35 @@ subjects:
 """
 
 
+REPORT = """\
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: daily-report-reader
+  namespace: {ns}
+rules:
+  # read-only: Deployments to report on, plus what the policy needs (HPA, LimitRange)
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["limitranges"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: daily-report-reader
+  namespace: {ns}
+roleRef: {{apiGroup: rbac.authorization.k8s.io, kind: Role, name: daily-report-reader}}
+subjects:
+  - {{kind: ServiceAccount, name: daily-report, namespace: rightsizing}}
+"""
+
+
 def load_config(path: Path = DEPLOY / "configmap.yaml") -> Config:
     """The Config embedded in the ConfigMap (validated: forbidden namespaces and bad names are rejected)."""
     cm = YAML(typ="safe").load(path.read_text(encoding="utf-8"))
@@ -158,6 +187,7 @@ def render(cfg: Config | None = None) -> dict[str, str]:
     out = {
         "rbac.yaml": HEADER + "".join(READER.format(ns=ns) for ns in cfg.namespaces) + READER_ARGO,
         "mirror/rbac.yaml": HEADER + "".join(MIRROR.format(ns=ns) for ns in cfg.mirror.namespaces) + MIRROR_ARGO,
+        "report/rbac.yaml": HEADER + "---\n".join(REPORT.format(ns=ns) for ns in cfg.namespaces),
     }
     y = _yaml()
     proj = y.load((DEPLOY / "mirror" / "appproject.yaml").read_text(encoding="utf-8"))

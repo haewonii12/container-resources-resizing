@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import commit_msg, logs
+from . import commit_msg, logs, runrecord
 from .config import DEFAULT_CONFIG_PATH, Config, SecretStore, load_config
 from .discovery import Candidate, KubeAPI, discover
 from .gitops import PENDING, WEBHOOK_MUTATED, GitError, GitRepo, History, PathGuardError, clone, git_env, \
@@ -26,7 +26,7 @@ from .manifest.detect import detect_format
 from .manifest.editors import edit_helm, edit_kustomize, edit_plain
 from .manifest.render import Renderer, check_drift, container_resources, nondeterministic_mask, validate_edit
 from .mcp_client import HttpMcpClient, McpError
-from .models import ContainerRec, ContainerResources, FieldChange, Outcome, split_field
+from .models import FIELDS, ContainerRec, ContainerResources, FieldChange, Outcome, split_field
 from .pending import decide_pending, expected_head
 from .policy import PolicyParams, recommend_container
 from .prom import PromClient, collect_usage, workload_stats
@@ -62,6 +62,8 @@ class RunReport:
     outcomes: list[Outcome]
     pushed: int = 0
     proposals: list[str] = field(default_factory=list)
+    run_status: str = "ok"  # ok | failed:<prometheus|mcp|git_clone>
+    push_failed: bool = False
 
     def counts(self) -> Counter:
         return Counter(o.status.split(":")[0] for o in self.outcomes)
@@ -76,23 +78,47 @@ class Runner:
         self.reviewer: Reviewer | None = None
         self.repo: GitRepo | None = None
         self.history: History | None = None
+        self._ctx: dict = {}  # per-workload facts for the run record (proposal, pending, LLM decision)
 
     # ------------------------------------------------------------------ run
     def run(self) -> RunReport:
+        report = self._run()
+        if self.cfg.records_enabled and not self.opts.dry_run and not self.opts.only:
+            self._push_record(report)
+        return report
+
+    def _push_record(self, report: RunReport) -> None:
+        """Write the run record to the report repo; a failure never hides a security exit (3)."""
+        deps = self.deps
+        record = runrecord.build_record(
+            self.cfg, run_id=self.run_id, started_at=deps.now, finished_at=datetime.now(timezone.utc),
+            run_status=report.run_status, exit_code=report.exit_code, pushed=report.pushed > 0,
+            outcomes=report.outcomes)
+        record["push_failed"] = report.push_failed
+        token = deps.secrets.path("gitea_token")
+        try:
+            sha = runrecord.write_record(self.cfg, record, deps.workdir, token if token.exists() else None)
+            log.info("run record", extra={"date": record["date"], "commit": sha})
+        except Exception as exc:  # the record is a by-product: log, and fail the Job only if it was clean
+            log.error("run_record_push_failed", extra={"error": str(exc)[-300:]})
+            if report.exit_code == EXIT_OK:
+                report.exit_code = EXIT_INFRA
+
+    def _run(self) -> RunReport:
         cfg, deps = self.cfg, self.deps
         start = time.monotonic()
         outcomes: list[Outcome] = []
 
         if deps.prom.vector("vector(1)") is None:
             log.error("prometheus unreachable")
-            return RunReport(EXIT_INFRA, outcomes)
+            return RunReport(EXIT_INFRA, outcomes, run_status="failed:prometheus")
         if not self.opts.no_llm:
             try:
                 deps.mcp.connect(deadline_seconds=cfg.timeouts.mcp_connect)
                 log.info("mcp connected", extra={"tools": sorted(t.get("name") for t in deps.mcp.list_tools())})
             except McpError as exc:
                 log.error("mcp sidecar unreachable", extra={"error": str(exc)})
-                return RunReport(EXIT_INFRA, outcomes)
+                return RunReport(EXIT_INFRA, outcomes, run_status="failed:mcp")
             self.reviewer = Reviewer(deps.llm, cfg.llm.model, deps.mcp,
                                      lambda ref, metric, days, q: workload_stats(deps.prom, ref, metric, days, q),
                                      cfg.llm.max_turns,
@@ -115,16 +141,18 @@ class Runner:
             self.history = History.scan(self.repo)
         except GitError as exc:
             log.error("git clone failed", extra={"error": str(exc)})
-            return RunReport(EXIT_INFRA, outcomes)
+            return RunReport(EXIT_INFRA, outcomes, run_status="failed:git_clone")
 
         renderer = deps.renderer or Renderer(timeout=cfg.timeouts.render, kube_version=deps.kube.version(),
                                              api_versions=deps.kube.api_versions(),
                                              kustomize_build_options=cfg.argocd.kustomize_build_options)
         self._renderer = renderer
         for cand in candidates:
-            if time.monotonic() - start + cfg.timeouts.reserve(not self.opts.no_llm) > cfg.timeouts.run_budget:
+            reserve = cfg.timeouts.reserve(not self.opts.no_llm, cfg.records_enabled)
+            if time.monotonic() - start + reserve > cfg.timeouts.run_budget:
                 outcomes.append(Outcome(cand.ref.key, "skipped:budget"))
                 continue
+            self._ctx = {}
             try:
                 outcome = self.process(cand, renderer)
             except SkipEdit as exc:
@@ -136,12 +164,13 @@ class Runner:
                 log.exception("workload failed", extra={"workload": cand.ref.key})
                 self.repo.reset_worktree()
                 outcome = Outcome(cand.ref.key, "skipped:error", type(exc).__name__)
+            self._annotate(outcome)
             log.info("workload", extra={"workload": outcome.workload, "outcome": outcome.status,
                                         "detail": outcome.detail, "commit": outcome.commit})
             outcomes.append(outcome)
 
         exit_code = EXIT_SECURITY if self.security_events else EXIT_OK
-        pushed = 0
+        pushed, push_failed = 0, False
         committed = [o for o in outcomes if o.status in ("committed", "superseded", "withdrawn")]
         if committed and not self.opts.dry_run and cfg.git.push_enabled:
             try:
@@ -149,8 +178,9 @@ class Runner:
                 pushed = len(committed)
             except GitError as exc:
                 log.error("git push failed", extra={"error": str(exc)})
+                push_failed = True
                 exit_code = EXIT_SECURITY if self.security_events else EXIT_INFRA
-        report = RunReport(exit_code, outcomes, pushed, self.proposals)
+        report = RunReport(exit_code, outcomes, pushed, self.proposals, push_failed=push_failed)
         self._summary(report, len(candidates) + len(skipped))
         return report
 
@@ -170,6 +200,11 @@ class Runner:
             state = pending_state(latest, head, cand.containers, cand.argo_status)
             if state == PENDING:
                 if self.history.endorsed_pending(ref.key, cfg.suppress_days, self.deps.now.timestamp()):
+                    self._ctx["pending"] = self._pending_info(latest, "endorsed")
+                    self._ctx["proposal"] = [{"container": ch.container, "field": ch.field, "current": ch.old,
+                                              "proposed": ch.new, "changed": True, "direction": ch.direction,
+                                              "basis": "승인 대기 중인 제안", "reason": None, "p95": None,
+                                              "max": None} for ch in latest.changes]
                     return Outcome(ref.key, "no_change", f"pending_endorsed {latest.sha[:10]}")
                 pending_vals = {(ch.container, ch.field): ch.new for ch in latest.changes}
                 want = expected_head(cand.containers, pending_vals)
@@ -191,6 +226,7 @@ class Runner:
         recs = [recommend_container(c, cand.containers[c], usage[c], policy, params, cand.limitrange,
                                     cand.blocked_resources) for c in cand.containers]
         self._apply_suppression(ref.key, recs)
+        self._ctx["proposal"] = runrecord.proposal_rows(cand.containers, recs, usage)
         window = f"{(self.deps.now - timedelta(days=cfg.window_days)):%Y-%m-%d}..{self.deps.now:%Y-%m-%d} " \
                  f"({cfg.window_days}d)"
         if pending_commit is not None:
@@ -220,6 +256,18 @@ class Runner:
         """A previous proposal is still waiting for a human sync: keep it, supersede it, or withdraw it."""
         ref = cand.ref
         d = decide_pending(cand.containers, head, pending_vals, recs, self.cfg.min_change)
+        self._ctx["pending"] = self._pending_info(pending_commit, d.kind)
+        basis = {(ch.container, ch.field): ch.basis for ch in d.changes}
+        rows = []
+        for c, target in d.target.items():  # target vs LIVE: what stays proposed after this run
+            for f in FIELDS:
+                old, new = cand.containers[c].get(f) if c in cand.containers else None, target.get(f)
+                if new is None or (old is not None and abs(new - old) < 1e-6):
+                    continue
+                direction = "set" if old is None else ("shrink" if new < old else "grow")
+                rows.append(runrecord.proposal_row(c, f, old, new, True, direction,
+                                      basis.get((c, f), "승인 대기 중인 제안"), None, usage.get(c)))
+        self._ctx["proposal"] = rows
         if d.kind == "same":
             age = (self.deps.now.timestamp() - pending_commit.time) / 86400
             stale = " stale_pending" if age > self.cfg.suppress_days else ""
@@ -249,13 +297,29 @@ class Runner:
     def _review(self, ref, payload: dict) -> tuple[str, Outcome | None]:
         """LLM review (or the explicit --no-llm note). Returns (note, held outcome or None)."""
         if self.opts.no_llm:
+            self._ctx.update(decision=None, notes="사용 안 함 (--no-llm)")
             return "사용 안 함 (--no-llm)", None
         review = self.reviewer.review(ref, payload)
         if review.security_events:
             self.security_events += [f"{ref.key}: {e}" for e in review.security_events]
+        self._ctx.update(decision="apply" if review.decision == "apply" else "hold", notes=review.notes)
         if review.decision != "apply":
             return review.notes, Outcome(ref.key, f"held:{review.reason}", review.notes)
         return review.notes, None
+
+    # ------------------------------------------------------------------ run record facts
+    def _annotate(self, outcome: Outcome) -> None:
+        """Attach what this workload's code path decided (one source of truth for the daily report)."""
+        ctx = self._ctx
+        outcome.proposal = ctx.get("proposal", [])
+        outcome.pending = ctx.get("pending")
+        if "decision" in ctx and outcome.status.split(":")[0] in ("committed", "superseded", "held", "proposed"):
+            outcome.llm_decision, outcome.llm_notes = ctx["decision"], ctx.get("notes", "")
+
+    def _pending_info(self, commit, kind: str) -> dict:
+        return {"sha": commit.sha, "age_days": round((self.deps.now.timestamp() - commit.time) / 86400, 1),
+                "kind": kind}
+
 
     def _commit_info(self, ref, changes, window, usage, policy, replicas, note,
                      supersedes: str | None = None) -> commit_msg.CommitInfo:

@@ -5,6 +5,7 @@ Kubernetes 컨테이너의 CPU/메모리 request·limit을 **실제 사용량 �
 | 구성요소 | 실행 | 역할 |
 |---|---|---|
 | **rightsizing** (`python -m rightsizing`) | 매일 03:00 CronJob | Prometheus 7일 사용량을 기반으로 namespace별 정책에 따라 새 request/limit을 계산합니다. manifest repo에 **workload당 commit 1개**를 push하고, commit message에 근거를 남깁니다 |
+| **daily-report** (`python -m rightsizing.report`) | 매일 05:00 CronJob | 변경 예정 표, 노드 용량, 노드 장애(N-1) 수용 여부를 Markdown 리포트로 만들어 별도 Gitea 저장소(`report`)에 push합니다. 클러스터에는 읽기만 합니다 |
 | **gitops-mirror** (`python -m rightsizing.mirror`) | 매일 02:30 CronJob | 클러스터에 새로 생긴 Deployment를 manifest repo와 ArgoCD(수동 sync)에 등록하고, 사라진 것은 안전장치를 거쳐 정리합니다 |
 
 ```
@@ -220,6 +221,34 @@ python -m rightsizing.mirror --config ... --dry-run    # 계획만 출력합니�
 - 작은 변동이면 그대로 둡니다(`no_change:pending_same`). 이때는 LLM도 호출하지 않습니다.
 - 다시 계산한 값이 현재 값과 거의 같으면 제안을 **철회**합니다. 철회는 현재 값으로 되돌리는 commit(`Rightsizing-Withdraw`)이고, git revert가 아니므로 같은 방향의 제안 억제(suppression)가 걸리지 않습니다.
 - 사람이 교체나 철회 commit을 revert하면, 그 결정을 존중해서 14일 동안 다시 손대지 않습니다(`no_change:pending_endorsed`).
+
+## Daily report (`report` 저장소)
+
+매일 05:00(Asia/Seoul) `daily-report` CronJob이 리포트를 만들어 ConfigMap `report.git_url` 저장소에 push합니다. 이 저장소는 manifest 저장소(`git.url`)와 달라야 하고(설정 검증에서 거부), bot에게 write 권한이 있어야 합니다.
+
+| 경로 | 내용 | 쓰는 주체 |
+|---|---|---|
+| `README.md` | 오늘 리포트(저장소 첫 화면) | daily-report |
+| `reports/YYYY/MM/YYYY-MM-DD.md`, `.json` | 날짜별 리포트 | daily-report |
+| `runs/YYYY/MM/YYYY-MM-DD.json` | rightsizing 실행 기록(workload별 상태, 제안값, LLM apply/hold와 메모, pending 정보) | rightsizing (03:00) |
+
+날짜는 모두 `report.timezone`(기본 Asia/Seoul) 기준입니다. 같은 날 다시 돌려 내용이 같으면 commit하지 않습니다.
+
+**리포트 내용**
+- **변경 예정 표:** 대상 namespace의 모든 Deployment. rightsizing이 판단한 workload는 실행 기록의 값·상태·LLM 판단을 그대로 씁니다. ArgoCD 앱이 없거나 아직 Sync되지 않아 rightsizing이 건너뛴 workload는 같은 정책 코드로 계산해 "제안 가능 (Sync 전)"으로 표시합니다. 상태: 승인 대기(commit) / commit됨(push 꺼짐) / push 실패 / 제안 교체 / 보류(사유) / 승인 대기(n일).
+- **노드 용량:** 노드별 실사용량(metrics.k8s.io, 없으면 n/a), request 합계, allocatable(CPU·메모리·`nvidia.com/gpu`·pod 수).
+- **노드 장애 시(N-1):** pod는 같은 role(`report.node_role_prefix`, 기본 `node-role.kubernetes.io/<role>`)의 노드로만 옮겨 간다고 보고, 죽는 노드의 pod(DaemonSet·static pod 제외)를 큰 것부터 남은 노드에 배치해 봅니다. CPU·메모리·GPU request, pod 수, taint/toleration을 보고, cordon된 노드는 받는 쪽에서 뺍니다. 결과는 가능 / 불가(못 들어가는 pod 목록) / 단일 노드입니다. taint(NoSchedule/NoExecute)가 있는 control-plane은 분석에서 빠지고, taint 없이 워크로드를 돌리는 control-plane은 포함됩니다. nodeSelector·affinity·topology spread·PDB는 반영하지 않습니다.
+
+**실행 기록과 `push_enabled`:** 실행 기록 push는 `git.push_enabled`(manifest 제안 push)와 별개로 동작합니다(`report.runs_enabled: false`로 끌 수 있습니다). `--dry-run`과 `--only` 실행은 기록을 남기지 않습니다. 기록 push가 실패하면 rightsizing은 exit 2로 끝나지만, 보안 이벤트(exit 3)는 가리지 않습니다. 리포트는 그날 기록을 최대 `report.wait_for_record_minutes`(기본 10분) 기다리고, 없으면 어제 기록을 쓰거나 "기록 없음"을 맨 위에 표시합니다.
+
+**권한:** `daily-report` SA만 클러스터 전체의 nodes·pods(및 metrics) 읽기 권한(ClusterRole)을 가집니다. 대상 namespace에서는 Deployment·HPA·LimitRange 읽기만 하고, 쓰기 동사와 Secret 접근은 없습니다. LLM 키는 마운트하지 않습니다.
+
+**설치 순서:** ① report 저장소를 만들고 bot에 write를 줍니다 ② ConfigMap `report` 블록을 채웁니다(채우기 전에 rightsizing이 기록을 push하려 하면 exit 2) ③ `python scripts/gen_namespaces.py`로 RBAC을 다시 만들고 `kubectl apply -k deploy/`. 수동 실행: `kubectl -n rightsizing create job --from=cronjob/daily-report daily-report-manual`.
+
+| exit | 의미 | 알림 |
+|---|---|---|
+| 0 | 정상 | — |
+| 2 | Prometheus·apiserver·report 저장소 오류 | `DailyReportJobFailed` |
 
 ## 원래 스펙과 달라진 점 (합의된 계획 기준)
 

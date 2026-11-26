@@ -116,3 +116,7 @@ class Outcome:
     status: str  # committed | held:<r> | skipped:<r> | proposed (dry-run) | no_change
     detail: str = ""
     commit: str | None = None
+    llm_decision: str | None = None  # apply | hold | None (LLM not consulted)
+    llm_notes: str = ""
+    proposal: list[dict] = field(default_factory=list)  # per field: container, field, current, proposed, ...
+    pending: dict | None = None  # {sha, age_days, kind}: a proposal still waiting for a human sync

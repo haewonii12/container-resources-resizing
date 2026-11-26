@@ -1,0 +1,21 @@
+# The only cluster-wide grant in this project: the daily report needs every node and every pod (for requests per
+# node and the N-1 simulation). Read-only, no secrets/configmaps; bound to the daily-report SA only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: rightsizing-daily-report
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "pods"]
+    verbs: ["get", "list"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["nodes", "pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: rightsizing-daily-report
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: rightsizing-daily-report}
+subjects:
+  - {kind: ServiceAccount, name: daily-report, namespace: rightsizing}

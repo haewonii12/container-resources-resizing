@@ -5,6 +5,7 @@ Secrets are never part of the config file: they are read from mounted files.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Literal
 
@@ -15,6 +16,15 @@ from . import DEFAULT_NAMESPACES, namespace_error
 
 DEFAULT_CONFIG_PATH = "/etc/rightsizing/config.yaml"
 DEFAULT_SECRET_DIR = "/var/run/secrets/rightsizing"
+
+
+def normalize_repo(url: str) -> str:
+    """Comparable form of a git URL (scheme, credentials, case, trailing slash and .git removed)."""
+    url = url.strip().lower()
+    url = re.sub(r"^[a-z+]+://", "", url)
+    url = re.sub(r"^[^@/]+@", "", url)
+    url = url.replace(":", "/", 1) if re.match(r"^[^/]+:[^0-9]", url) else url
+    return url.removesuffix("/").removesuffix(".git")
 
 
 def _check_namespaces(value: list[str], field: str) -> list[str]:
@@ -45,10 +55,11 @@ class Timeouts(BaseModel):
     mcp_connect: float = Field(default=60, gt=0)
     run_budget: float = Field(default=5400, gt=0)
 
-    def reserve(self, with_llm: bool = True) -> float:
-        """Worst case for one more workload plus the final push (push + two rebase/push retries)."""
+    def reserve(self, with_llm: bool = True, with_record: bool = False) -> float:
+        """Worst case for one more workload plus the final push (push + two rebase/push retries),
+        plus the run-record clone + push to the report repo when one is configured."""
         workload = 4 * self.render + (self.llm_total + self.llm_turn if with_llm else 0) + 12 * self.prom
-        return workload + 6 * self.git
+        return workload + 6 * self.git + (2 * self.git if with_record else 0)
 
 
 class PrometheusConfig(BaseModel):
@@ -81,6 +92,27 @@ class ArgoCDConfig(BaseModel):
     tracking_method: Literal["annotation", "label", "annotation+label"] = "annotation"
     instance_label: str = "app.kubernetes.io/instance"
     kustomize_build_options: list[str] = Field(default_factory=list)
+
+
+class ReportConfig(BaseModel):
+    """Daily report + rightsizing run record, both pushed to a separate repo (never the manifest repo)."""
+    git_url: str = "https://GITEA_HOST_PLACEHOLDER/org/report.git"
+    branch: str = "main"
+    node_role_prefix: str = "node-role.kubernetes.io/"
+    runs_enabled: bool = True  # rightsizing writes runs/YYYY/MM/<date>.json (independent of git.push_enabled)
+    wait_for_record_minutes: int = Field(default=10, ge=0, le=60)
+    timezone: str = "Asia/Seoul"
+
+    @field_validator("timezone")
+    @classmethod
+    def _tz_exists(cls, value: str) -> str:
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError(f"unknown timezone {value!r}") from exc
+        return value
 
 
 class MirrorConfig(BaseModel):
@@ -134,6 +166,7 @@ class Config(BaseModel):
     timeouts: Timeouts = Field(default_factory=Timeouts)
     manual_mappings: list[ManualMapping] = Field(default_factory=list)
     mirror: MirrorConfig = Field(default_factory=MirrorConfig)
+    report: ReportConfig | None = None
     secret_dir: str = DEFAULT_SECRET_DIR
 
     @field_validator("namespaces")
@@ -145,7 +178,9 @@ class Config(BaseModel):
     def _cross_checks(self) -> "Config":
         if self.min_days > self.window_days:
             raise ValueError(f"min_days ({self.min_days}) must be <= window_days ({self.window_days})")
-        if self.timeouts.run_budget <= self.timeouts.reserve():
+        if self.report is not None and normalize_repo(self.report.git_url) == normalize_repo(self.git.url):
+            raise ValueError("report.git_url must not be the manifest repo (git.url)")
+        if self.timeouts.run_budget <= self.timeouts.reserve(with_record=self.records_enabled):
             raise ValueError(f"timeouts.run_budget ({self.timeouts.run_budget}) must exceed the per-workload+push "
                              f"reserve ({self.timeouts.reserve():.0f}s); otherwise every workload is skipped:budget")
         missing = [ns for ns in self.namespaces if ns not in self.policies]
@@ -157,6 +192,10 @@ class Config(BaseModel):
         if outside:  # the mirror registers apps for rightsizing: it must not reach beyond `namespaces`
             raise ValueError(f"mirror.namespaces must be a subset of namespaces: {outside}")
         return self
+
+    @property
+    def records_enabled(self) -> bool:
+        return self.report is not None and self.report.runs_enabled
 
     def policy_for(self, namespace: str) -> NamespacePolicy:
         return self.policies[namespace]
