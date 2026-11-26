@@ -1,6 +1,7 @@
 # Agent image: python + git + helm + kustomize (pinned, checksum-verified). Runs as UID 1000.
+# Base pinned to bookworm: trixie apt (sqv) fails signature checks under qemu when cross-building linux/amd64.
 # Build: docker build -t <registry>/rightsizing-agent:<tag> -f Dockerfile .
-FROM python:3.12-slim AS tools
+FROM python:3.12-slim-bookworm AS tools
 ARG TARGETARCH=amd64
 ARG HELM_VERSION=v3.16.3
 ARG HELM_SHA256_amd64=f5355c79190951eed23c5432a3b920e071f4c00a64f75e077de0dd4cb7b294ea
@@ -20,7 +21,7 @@ RUN set -eux; \
     echo "${ks}  /tmp/kustomize.tgz" | sha256sum -c -; \
     tar -xzf /tmp/kustomize.tgz -C /usr/local/bin kustomize && chmod 0755 /usr/local/bin/kustomize
 
-FROM python:3.12-slim
+FROM python:3.12-slim-bookworm
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/* \
     && useradd --uid 1000 --create-home --home-dir /home/rightsizing rightsizing
 COPY --from=tools /usr/local/bin/helm /usr/local/bin/kustomize /usr/local/bin/
