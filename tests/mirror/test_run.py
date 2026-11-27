@@ -70,6 +70,8 @@ class FakeMirrorKube:
             if name in self.apps:
                 raise ApiError(409, "already exists")
             return
+        if name in self.apps:  # also while terminating: 409 "object is being deleted"
+            raise ApiError(409, "already exists")
         self.calls.append(("create", name))
         self.bodies.append(copy.deepcopy(body))
         if "create" in self.fail:
@@ -87,7 +89,19 @@ class FakeMirrorKube:
         self.calls.append(("delete", name, uid, resource_version))
         app = self.apps[name]
         assert app["metadata"]["uid"] == uid and app["metadata"]["resourceVersion"] == resource_version
-        del self.apps[name]
+        # like the API server with propagationPolicy=Orphan: terminating until the garbage collector runs
+        app["metadata"].update(deletionTimestamp="2026-01-01T00:00:00Z", finalizers=["orphan"])
+        if "gc_stuck" not in self.fail:
+            self.pending_gc = getattr(self, "pending_gc", set()) | {name}
+
+    def wait_application_gone(self, name, uid):
+        self.calls.append(("wait_gone", name))
+        app = self.apps.get(name)
+        if app is not None and app["metadata"]["uid"] == uid and name in getattr(self, "pending_gc", set()):
+            del self.apps[name]
+            self.pending_gc.discard(name)
+        app = self.apps.get(name)
+        return app is None or app["metadata"]["uid"] != uid
 
     def mutating_calls(self):
         return [c for c in self.calls if c[0] in ("create", "delete")]

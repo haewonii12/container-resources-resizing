@@ -107,6 +107,29 @@ def test_recreate_guard_reasserted_on_fresh_application(world):
     assert not any(c[0] == "delete" for c in kube.calls)
 
 
+def test_recreate_waits_for_the_orphan_delete_before_creating(world):
+    """The API server keeps an orphan-deleted Application (deletionTimestamp + orphan finalizer) until the garbage
+    collector runs; a create before that is 409 "object is being deleted" (seen on k3s, every time)."""
+    kube = world["kube"]
+    kube.deployments[("development", "demo-x")] = deployment("demo-x")
+    mirror(world)
+    auto(world)
+    report, _ = mirror(world, now=T0 + timedelta(days=1))
+    order = [c[0] for c in kube.calls if c[0] in ("delete", "wait_gone", "create")]
+    assert order[-3:] == ["delete", "wait_gone", "create"] and report.first_synced == ["development/demo-x"]
+
+
+def test_orphan_delete_that_never_finishes_is_recreate_failed(world):
+    kube = world["kube"]
+    kube.deployments[("development", "demo-x")] = deployment("demo-x")
+    mirror(world)
+    auto(world)
+    kube.fail.add("gc_stuck")
+    report, _ = mirror(world, now=T0 + timedelta(days=1))
+    assert report.exit_code == EXIT_INFRA and report.recreate_failed == ["development/demo-x"]
+    assert kube.mutating_calls()[-1][0] == "delete"  # no create attempted against the terminating object
+
+
 def test_create_failure_after_delete_is_recreate_failed_and_selfheals(world):
     kube = world["kube"]
     kube.deployments[("development", "demo-x")] = deployment("demo-x")

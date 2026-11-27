@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -44,6 +45,7 @@ class MirrorKube(Protocol):
     def create_application(self, body: dict, dry_run: bool = False) -> None: ...
     def get_application(self, name: str) -> dict | None: ...
     def delete_application(self, name: str, uid: str, resource_version: str) -> None: ...
+    def wait_application_gone(self, name: str, uid: str) -> bool: ...
 
 
 @dataclass
@@ -526,7 +528,10 @@ def _apply_recreate(cfg: Config, kube: MirrorKube, plan: Plan, report: MirrorRep
             log.warning("first-sync delete failed", extra={"app": aname, "error": _api_error(exc)})
             report.sync_skipped[path] = "delete_failed"
             continue
-        try:
+        try:  # an orphan delete only sets deletionTimestamp + the orphan finalizer: a create before the garbage
+            # collector removes it is refused with 409 "object is being deleted"
+            if not kube.wait_application_gone(aname, meta["uid"]):
+                raise TimeoutError(f"Application {aname} still terminating after the orphan delete")
             kube.create_application(body)
         except Exception as exc:  # the next run's self-heal recreates it without an operation
             log.error("first-sync create failed after delete", extra={"app": aname, "error": _api_error(exc)})
@@ -613,4 +618,14 @@ class KubeMirrorClient:
             propagation_policy="Orphan")
         self.custom.delete_namespaced_custom_object(self.GROUP, self.VERSION, self.argo_ns, self.PLURAL, name,
                                                     body=body, _request_timeout=self.timeout)
+
+    def wait_application_gone(self, name: str, uid: str) -> bool:
+        deadline = time.monotonic() + self.timeout
+        while True:
+            app = self.get_application(name)
+            if app is None or (app.get("metadata") or {}).get("uid") != uid:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.5)
 
