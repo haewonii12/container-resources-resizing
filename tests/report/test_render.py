@@ -44,3 +44,9 @@ def test_empty_table_and_json_stable():
     r = report(table=ChangeTable(deployments=0))
     assert "변경 제안이 없습니다." in render_markdown(r)
     assert render_json(r) == render_json(r) and '"date": "2026-11-26"' in render_json(r)
+
+
+def test_usage_column_follows_window_days():
+    md = render_markdown(report(window_days=3))
+    assert "| 3일 사용량 |" in md and "최근 3일 P95 (mem.lim은 최대값)" in md
+    assert "7일" not in md

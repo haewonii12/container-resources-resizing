@@ -120,7 +120,7 @@ def build_report(cfg: Config, kube: ReportKube, prom: PromClient, record: dict |
     return DailyReport(date=today.isoformat(), generated_at=f"{today.isoformat()} ({cfg.report.timezone})",
                        namespaces=list(cfg.namespaces), record=header, banners=banners, table=table,
                        nodes=node_rows(nodes, pods, usage, prefix), failover=simulate_failover(nodes, pods, prefix),
-                       metrics_available=metrics)
+                       metrics_available=metrics, window_days=cfg.window_days)
 
 
 def run_report(cfg: Config, kube: ReportKube, prom: PromClient, repo: GitRepo, now: datetime,

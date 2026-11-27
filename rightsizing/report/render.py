@@ -26,6 +26,7 @@ class DailyReport:
     nodes: list[NodeRow]
     failover: list[FailoverRow]
     metrics_available: bool = True
+    window_days: int = 7  # Prometheus window behind the usage column (Config.window_days)
     notes: list[str] = field(default_factory=list)
 
 
@@ -61,13 +62,14 @@ def render_markdown(r: DailyReport) -> str:
 
     out += ["## 변경 예정", ""]
     if t.rows:
-        out += ["| Namespace | Deployment | 컨테이너 | 항목 | 현재 | 제안 | 변화 | 7일 P95/max | 상태 | LLM |",
+        out += [f"| Namespace | Deployment | 컨테이너 | 항목 | 현재 | 제안 | 변화 | {r.window_days}일 사용량 | 상태 | LLM |",
                 "|---|---|---|---|---|---|---|---|---|---|"]
         for row in t.rows:
             pct = "-" if row.change_pct is None else f"{row.change_pct:+.0f}%"
             out.append(f"| {row.namespace} | {row.deployment} | {row.container} | {_LABEL.get(row.field, row.field)} "
                        f"| {_q(row.field, row.current)} | {_q(row.field, row.proposed)} | {pct} "
                        f"| {_q(row.field, row.p95)} | {_cell(row.status)} | {_cell(row.llm)} |")
+        out += ["", f"사용량: 최근 {r.window_days}일 P95 (mem.lim은 최대값)."]
     else:
         out.append("변경 제안이 없습니다.")
     out.append("")
