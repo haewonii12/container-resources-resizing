@@ -59,17 +59,8 @@ MIRROR = {"record_version": 1, "date": "2026-11-26", "exit_code": 0, "created": 
           "refreshed": [], "skipped": [{"path": "development/api", "reason": "live_changed"}]}
 
 
-def test_mirror_section_tables():
+def test_mirror_record_is_in_json_not_in_markdown():
     md = render_markdown(report(mirror=MIRROR))
-    order = ["## 변경 예정", "## 어제 밤 mirror", "### 첫 Sync", "| development/new |", "### 클러스터 변경을 git에 반영 (adopt)",
-             "| development/web | replicas 1→3<br>env[app] FOO changed | overwrote pending proposal aaaaaaaaaa"
-             "<br>overwrote human edit bbbbbbbbbb |", "### 건너뜀", "| development/api | live_changed: Sync 직전에 클러스터 값이 git과 달라짐", "## 노드 용량"]
-    pos = [md.index(s) for s in order]
-    assert pos == sorted(pos)
+    assert "mirror" not in md and "development/new" not in md
     assert '"first_synced": [' in render_json(report(mirror=MIRROR))
-
-
-def test_mirror_section_missing_record_banner():
-    md = render_markdown(report())
-    assert "## 어제 밤 mirror\n\n> ⚠️ mirror 기록 없음" in md
     assert '"mirror": null' in render_json(report())

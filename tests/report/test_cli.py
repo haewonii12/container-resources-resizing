@@ -174,8 +174,7 @@ def test_dry_run_does_not_write(rep):
 
 def test_loads_todays_mirror_record(rep):
     push_record(rep)
-    res, _ = run(rep)
-    assert "> ⚠️ mirror 기록 없음" in res.markdown
+    run(rep)
     sh(rep["seed"], "pull", "-q", "origin", "main")
     path = rep["seed"] / "mirror/2026/11/2026-11-26.json"
     path.parent.mkdir(parents=True)
@@ -186,5 +185,5 @@ def test_loads_todays_mirror_record(rep):
     sh(rep["seed"], "commit", "-m", "mirror record")
     sh(rep["seed"], "push", "-q", "origin", "main")
     res, _ = run(rep)
-    assert "mirror 기록 없음" not in res.markdown and "| development/web |" in res.markdown
+    assert "mirror" not in res.markdown
     assert json.loads(show(rep, "reports/2026/11/2026-11-26.json"))["mirror"]["first_synced"] == ["development/web"]
