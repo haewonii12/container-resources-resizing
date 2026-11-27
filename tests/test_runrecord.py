@@ -89,3 +89,13 @@ def test_write_record_clone_failure_raises(tmp_path):
                        pushed=False, outcomes=[])
     with pytest.raises(GitError):
         write_record(cfg, rec, tmp_path / "w", None)
+
+
+def test_write_record_with_mirror_prefix(tmp_path, report_remote):
+    cfg = cfg_with_report(f"file://{report_remote}")
+    rec = {"record_version": 1, "date": "2026-11-26", "first_synced": ["development/web"]}
+    sha = write_record(cfg, rec, tmp_path / "w1", None, prefix="mirror")
+    files = sh(tmp_path, "--git-dir", str(report_remote), "show", "--name-only", "--format=%s", sha.strip()).split("\n")
+    assert files[0] == "mirror record 2026-11-26" and "mirror/2026/11/2026-11-26.json" in files
+    assert record_path(local_date(datetime(2026, 11, 25, 17, 30, tzinfo=timezone.utc), "Asia/Seoul"),
+                       "mirror") == "mirror/2026/11/2026-11-26.json"

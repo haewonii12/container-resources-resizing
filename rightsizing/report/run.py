@@ -17,7 +17,7 @@ from ..config import Config
 from ..gitops import GitRepo
 from ..models import WorkloadRef
 from ..prom import PromClient, collect_usage
-from ..runrecord import RECORD_VERSION, local_date, record_path
+from ..runrecord import MIRROR_DIR, RECORD_VERSION, local_date, record_path
 from .changes import build_table, compute_proposal, containers_of, needs_compute, record_entries, workload_key
 from .nodes import Res, node_rows, simulate_failover
 from .render import DailyReport, render_json, render_markdown
@@ -79,6 +79,12 @@ def find_record(repo: GitRepo, branch: str, today: date, wait_minutes: int,
     return record, banners
 
 
+def find_mirror_record(repo: GitRepo, today: date) -> dict | None:
+    """Last night's gitops-mirror record (02:30, long before the report: no waiting)."""
+    record = _load(repo.workdir / record_path(today, MIRROR_DIR))
+    return record if record is not None and record.get("record_version") == RECORD_VERSION else None
+
+
 def _computed(cfg: Config, kube: ReportKube, prom: PromClient, deps_by_ns: dict[str, list[dict]],
               entries: dict) -> dict[str, list[dict]]:
     out: dict[str, list[dict]] = {}
@@ -102,7 +108,7 @@ def _computed(cfg: Config, kube: ReportKube, prom: PromClient, deps_by_ns: dict[
 
 
 def build_report(cfg: Config, kube: ReportKube, prom: PromClient, record: dict | None, banners: list[str],
-                 today: date) -> DailyReport:
+                 today: date, mirror: dict | None = None) -> DailyReport:
     prefix = cfg.report.node_role_prefix
     deps_by_ns = {ns: [d for d in kube.list_deployments(ns) if d.get("kind", "Deployment") == "Deployment"]
                   for ns in cfg.namespaces}
@@ -120,7 +126,7 @@ def build_report(cfg: Config, kube: ReportKube, prom: PromClient, record: dict |
     return DailyReport(date=today.isoformat(), generated_at=f"{today.isoformat()} ({cfg.report.timezone})",
                        namespaces=list(cfg.namespaces), record=header, banners=banners, table=table,
                        nodes=node_rows(nodes, pods, usage, prefix), failover=simulate_failover(nodes, pods, prefix),
-                       metrics_available=metrics, window_days=cfg.window_days)
+                       metrics_available=metrics, window_days=cfg.window_days, mirror=mirror)
 
 
 def run_report(cfg: Config, kube: ReportKube, prom: PromClient, repo: GitRepo, now: datetime,
@@ -133,7 +139,7 @@ def run_report(cfg: Config, kube: ReportKube, prom: PromClient, repo: GitRepo, n
     record, banners = find_record(repo, cfg.report.branch, today, 0 if dry_run else cfg.report.wait_for_record_minutes,
                                   sleep)
     try:
-        report = build_report(cfg, kube, prom, record, banners, today)
+        report = build_report(cfg, kube, prom, record, banners, today, find_mirror_record(repo, today))
     except Exception as exc:  # apiserver list failures etc.
         log.error("cluster read failed", extra={"error": f"{type(exc).__name__}: {str(exc)[-200:]}"})
         return ReportResult(EXIT_INFRA)

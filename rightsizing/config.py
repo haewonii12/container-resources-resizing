@@ -129,6 +129,11 @@ class MirrorConfig(BaseModel):
     managed_label_key: str = "rightsizing/managed-by"
     managed_label_value: str = "gitops-mirror"
     k8s_timeout: float = Field(default=30, gt=0)
+    # opt-in, per namespace (subsets of `namespaces`): the mirror starts the first sync of its never-synced apps
+    # (pinned to the SHA it pushed, only when git == live) / commits live drift of synced apps into git
+    auto_first_sync_namespaces: list[str] = Field(default_factory=list)
+    adopt_drift_namespaces: list[str] = Field(default_factory=list)
+    adopt_ignore_annotation_prefixes: list[str] = Field(default_factory=list)  # written by other controllers
 
     @field_validator("namespaces")
     @classmethod
@@ -191,6 +196,10 @@ class Config(BaseModel):
         outside = sorted(set(self.mirror.namespaces) - set(self.namespaces))
         if outside:  # the mirror registers apps for rightsizing: it must not reach beyond `namespaces`
             raise ValueError(f"mirror.namespaces must be a subset of namespaces: {outside}")
+        for fname in ("auto_first_sync_namespaces", "adopt_drift_namespaces"):
+            unknown = sorted(set(getattr(self.mirror, fname)) - set(self.mirror.namespaces))
+            if unknown:
+                raise ValueError(f"mirror.{fname} must be a subset of mirror.namespaces: {unknown}")
         return self
 
     @property

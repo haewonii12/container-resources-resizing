@@ -3,6 +3,7 @@
 The daily report reads it so its numbers, statuses and LLM decisions are exactly the ones rightsizing used
 (one source of truth). Layout: runs/YYYY/MM/YYYY-MM-DD.json, dated in the report timezone (Asia/Seoul by default),
 so the 03:00 KST run (18:00 UTC the previous day) lands on the KST day the report looks up.
+The gitops mirror writes its own record the same way under mirror/YYYY/MM/YYYY-MM-DD.json.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import logging
 from dataclasses import asdict
 from datetime import date, datetime
 from pathlib import Path
+from typing import Callable
 from zoneinfo import ZoneInfo
 
 from .config import Config
@@ -22,14 +24,15 @@ log = logging.getLogger("rightsizing.runrecord")
 
 RECORD_VERSION = 1
 RUNS_DIR = "runs"
+MIRROR_DIR = "mirror"
 
 
 def local_date(now: datetime, tz: str) -> date:
     return now.astimezone(ZoneInfo(tz)).date()
 
 
-def record_path(day: date) -> str:
-    return f"{RUNS_DIR}/{day:%Y}/{day:%m}/{day.isoformat()}.json"
+def record_path(day: date, prefix: str = RUNS_DIR) -> str:
+    return f"{prefix}/{day:%Y}/{day:%m}/{day.isoformat()}.json"
 
 
 def build_record(cfg: Config, *, run_id: str, started_at: datetime, finished_at: datetime, run_status: str,
@@ -87,20 +90,28 @@ def dumps(record: dict) -> str:
     return json.dumps(record, ensure_ascii=False, indent=1, sort_keys=True, default=str) + "\n"
 
 
-def write_record(cfg: Config, record: dict, workdir: Path, token_file: Path | None) -> str | None:
-    """Clone the report repo, write the record, commit (runs/ only) and push. Returns the commit sha or None
-    when the file was already identical. Raises GitError on clone/push failures."""
+def write_record(cfg: Config, record: dict, workdir: Path, token_file: Path | None,
+                 prefix: str = RUNS_DIR, merge: Callable[[dict, dict], dict] | None = None) -> str | None:
+    """Clone the report repo, write the record, commit (`prefix`/ only) and push. Returns the commit sha or None
+    when the file was already identical. With `merge`, an existing record for the same day is combined with the
+    new one (merge(old, new)) instead of replaced. Raises GitError on clone/push failures."""
     assert cfg.report is not None
     base = workdir / "report-record"
     env = git_env(write_askpass(base / "bin"), cfg.git.username, token_file, base / "home")
     (base / "home").mkdir(parents=True, exist_ok=True)
     repo = clone(cfg.report.git_url, cfg.report.branch, base / "repo", env, cfg.timeouts.git)
-    rel = record_path(date.fromisoformat(record["date"]))
+    rel = record_path(date.fromisoformat(record["date"]), prefix)
     target = repo.workdir / rel
     target.parent.mkdir(parents=True, exist_ok=True)
+    if merge is not None and target.exists():
+        try:
+            record = merge(json.loads(target.read_text(encoding="utf-8")), record)
+        except ValueError:  # unreadable old record: the new one replaces it
+            log.warning("existing record unreadable, replacing", extra={"path": rel})
     target.write_text(dumps(record), encoding="utf-8")
-    sha = repo.commit([rel], f"run record {record['date']} ({record['run_id']}, {record['run_status']})",
-                      cfg.git.author_name, cfg.git.author_email, allowed_prefix=RUNS_DIR)
+    message = (f"run record {record['date']} ({record['run_id']}, {record['run_status']})" if prefix == RUNS_DIR
+               else f"{prefix} record {record['date']}")
+    sha = repo.commit([rel], message, cfg.git.author_name, cfg.git.author_email, allowed_prefix=prefix)
     if sha is not None:
         repo.push(cfg.report.branch)
     return sha

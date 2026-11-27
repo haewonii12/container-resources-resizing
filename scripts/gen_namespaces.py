@@ -5,8 +5,10 @@ ConfigMap at runtime without granting the agent cluster-wide read, so after chan
 
     python scripts/gen_namespaces.py && python scripts/gen_alerts.py
 
-Writes deploy/rbac.yaml, deploy/mirror/rbac.yaml and deploy/report/rbac.yaml, and rewrites only `spec.destinations` of
-deploy/mirror/appproject.yaml (its sourceRepos and comments are kept). tests/test_deploy.py checks they are current.
+Writes deploy/rbac.yaml, deploy/mirror/rbac.yaml, deploy/report/rbac.yaml and
+deploy/mirror/validatingadmissionpolicy.yaml (`mirror.auto_first_sync_namespaces`), and rewrites only
+`spec.destinations` of deploy/mirror/appproject.yaml (its sourceRepos and comments are kept).
+tests/test_deploy.py checks they are current.
 """
 
 from __future__ import annotations
@@ -168,6 +170,88 @@ subjects:
 """
 
 
+# Application.operation allowlist for the mirror's SHA-pinned first sync. Every property of the ArgoCD v2.13.3 CRD
+# (operation, operation.sync, operation.sync.syncStrategy[.apply]) is either allowed or denied below;
+# tests/test_deploy.py fails when the vendored CRD gains a property, so a CRD upgrade forces a review here.
+# Explicit !has() checks only: the CRD is structural (unknown fields are pruned before admission) and key-iteration
+# macros do not type-check on CRD objects (with failurePolicy Fail a type error would deny every create).
+OPERATION_ALLOWED, OPERATION_DENIED = ("initiatedBy", "sync"), ("info", "retry")
+SYNC_ALLOWED = ("revision", "syncStrategy")
+SYNC_DENIED = ("prune", "dryRun", "resources", "source", "sources", "revisions", "manifests", "syncOptions",
+               "autoHealAttemptsCount")
+STRATEGY_ALLOWED, STRATEGY_DENIED = ("apply",), ("hook",)
+APPLY_DENIED = ("force",)
+
+
+def operation_expression(namespaces: list[str]) -> str:
+    """CEL for `object.operation`: none at all, or (auto namespaces only) a plain apply pinned to a commit SHA."""
+    if not namespaces:
+        return "!has(object.operation)"
+    op, sync, strategy = "object.operation", "object.operation.sync", "object.operation.sync.syncStrategy"
+    ns_list = ", ".join(f"'{ns}'" for ns in namespaces)
+    lines = ["!has(object.operation) || (",
+             f"object.spec.destination.namespace in [{ns_list}] &&",
+             " && ".join(f"!has({op}.{k})" for k in OPERATION_DENIED) + " &&",
+             f"has({sync}) &&",
+             f"has({sync}.revision) && {sync}.revision.matches('^[0-9a-f]{{40}}$') &&",
+             " && ".join(f"!has({sync}.{k})" for k in SYNC_DENIED) + " &&",
+             f"(!has({strategy}) || (" + " && ".join(f"!has({strategy}.{k})" for k in STRATEGY_DENIED) + " &&",
+             f"(!has({strategy}.apply) || " + " && ".join(f"!has({strategy}.apply.{k})" for k in APPLY_DENIED)
+             + "))))"]
+    return "\n".join(lines)
+
+
+VAP = """\
+# DV-C: even with a leaked token, the mirror SA can only create inert, manual-sync Applications in gitops-mirror
+# (plus, in mirror.auto_first_sync_namespaces only, one first sync pinned to a commit SHA).
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: gitops-mirror-applications
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["argoproj.io"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE"]
+        resources: ["applications"]
+  matchConditions:
+    - name: only-the-mirror-service-account
+      expression: "request.userInfo.username == 'system:serviceaccount:rightsizing:gitops-mirror'"
+  validations:
+    - expression: "has(object.spec.project) && object.spec.project == 'gitops-mirror'"
+      message: "mirror Applications must use AppProject gitops-mirror"
+    - expression: "!has(object.spec.syncPolicy) || !has(object.spec.syncPolicy.automated)"
+      message: "mirror Applications must not enable automated sync"
+{operation}
+    - expression: "!has(object.metadata.finalizers) || size(object.metadata.finalizers) == 0"
+      message: "mirror Applications must not carry finalizers (a delete would cascade)"
+    - expression: "has(object.spec.source) && !has(object.spec.sources)"
+      message: "mirror Applications must be single-source"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: gitops-mirror-applications
+spec:
+  policyName: gitops-mirror-applications
+  validationActions: ["Deny"]
+"""
+
+
+def render_vap(namespaces: list[str]) -> str:
+    expr = operation_expression(namespaces)
+    if not namespaces:
+        rule = (f'    - expression: "{expr}"\n'
+                '      message: "mirror Applications must not request a sync operation"')
+    else:
+        rule = ("    - expression: >-\n" + "".join(f"        {line}\n" for line in expr.splitlines())
+                + '      message: "mirror Applications may only request a first sync pinned to a commit SHA '
+                  '(plain apply, auto-first-sync namespaces only)"')
+    return HEADER + VAP.format(operation=rule)
+
+
 def load_config(path: Path = DEPLOY / "configmap.yaml") -> Config:
     """The Config embedded in the ConfigMap (validated: forbidden namespaces and bad names are rejected)."""
     cm = YAML(typ="safe").load(path.read_text(encoding="utf-8"))
@@ -188,6 +272,7 @@ def render(cfg: Config | None = None) -> dict[str, str]:
         "rbac.yaml": HEADER + "".join(READER.format(ns=ns) for ns in cfg.namespaces) + READER_ARGO,
         "mirror/rbac.yaml": HEADER + "".join(MIRROR.format(ns=ns) for ns in cfg.mirror.namespaces) + MIRROR_ARGO,
         "report/rbac.yaml": HEADER + "---\n".join(REPORT.format(ns=ns) for ns in cfg.namespaces),
+        "mirror/validatingadmissionpolicy.yaml": render_vap(list(cfg.mirror.auto_first_sync_namespaces)),
     }
     y = _yaml()
     proj = y.load((DEPLOY / "mirror" / "appproject.yaml").read_text(encoding="utf-8"))

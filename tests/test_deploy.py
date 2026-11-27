@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -332,3 +333,86 @@ def test_daily_report_networkpolicy(objects):
         "app.kubernetes.io/name": "daily-report"}
     ports = {p["port"] for rule in np_["spec"]["egress"] for p in rule.get("ports", [])}
     assert ports == {53, 443, 6443, 9090, 3000}
+
+
+# ------------------------------------------------------------------ first-sync admission allowlist (US-006)
+
+CRD_FIXTURE = ROOT / "tests/fixtures/argocd-v2.13.3-application-operation-schema.yaml"
+
+
+def _gen():
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import gen_namespaces
+
+    return gen_namespaces
+
+
+def test_vap_operation_expression_empty_list_is_plain():
+    g = _gen()
+    assert g.operation_expression([]) == "!has(object.operation)"
+    vap = next(d for d in YAML(typ="safe").load_all(g.render_vap([])) if d["kind"] == "ValidatingAdmissionPolicy")
+    assert "!has(object.operation)" in [v["expression"] for v in vap["spec"]["validations"]]
+
+
+def test_vap_operation_expression_denies_every_item():
+    g = _gen()
+    expr = g.operation_expression(["development", "inference"])
+    assert expr.startswith("!has(object.operation) || (")
+    assert "object.spec.destination.namespace in ['development', 'inference']" in expr
+    assert "object.operation.sync.revision.matches('^[0-9a-f]{40}$')" in expr
+    for k in g.OPERATION_DENIED:
+        assert f"!has(object.operation.{k})" in expr
+    for k in g.SYNC_DENIED:
+        assert f"!has(object.operation.sync.{k})" in expr
+    assert "!has(object.operation.sync.syncStrategy.hook)" in expr
+    assert "!has(object.operation.sync.syncStrategy.apply.force)" in expr
+    assert ".all(" not in expr and ".exists(" not in expr  # no key iteration on CRD objects
+    assert expr.count("(") == expr.count(")")
+    vap = next(d for d in YAML(typ="safe").load_all(g.render_vap(["development", "inference"]))
+               if d["kind"] == "ValidatingAdmissionPolicy")
+    rules = [v["expression"] for v in vap["spec"]["validations"]]
+    assert " ".join(expr.splitlines()) in rules and len(rules) == 5
+
+
+def test_vap_allowlist_pinned_to_argocd_crd_properties():
+    """A CRD upgrade that adds an operation field must fail here until the allowlist decides about it."""
+    g = _gen()
+    op = YAML(typ="safe").load(CRD_FIXTURE.read_text())
+    sync = op["properties"]["sync"]
+    strategy = sync["properties"]["syncStrategy"]
+    assert set(op["properties"]) == set(g.OPERATION_ALLOWED) | set(g.OPERATION_DENIED)
+    assert set(sync["properties"]) == set(g.SYNC_ALLOWED) | set(g.SYNC_DENIED)
+    assert set(strategy["properties"]) == set(g.STRATEGY_ALLOWED) | set(g.STRATEGY_DENIED)
+    assert set(strategy["properties"]["apply"]["properties"]) == set(g.APPLY_DENIED)
+    for node in (op, sync, strategy, strategy["properties"]["apply"]):  # structural: unknown fields are pruned
+        assert not node.get("x-kubernetes-preserve-unknown-fields")
+
+
+def test_mirror_payload_satisfies_the_allowlist_shape():
+    from rightsizing.mirror.run import application_body
+
+    g = _gen()
+    body = application_body(Config(), "development", "web", "0" * 40)
+    assert set(body["operation"]) <= set(g.OPERATION_ALLOWED)
+    assert set(body["operation"]["sync"]) <= set(g.SYNC_ALLOWED)
+    assert set(body["operation"]["sync"]["syncStrategy"]) <= set(g.STRATEGY_ALLOWED)
+    assert body["operation"]["sync"]["syncStrategy"]["apply"] == {}
+
+
+@pytest.mark.skipif(not os.environ.get("RS_KUBE_DRYRUN"), reason="set RS_KUBE_DRYRUN=1 to run against a cluster")
+def test_installed_vap_server_dry_run():
+    """Server dry-run as the mirror SA against the installed (empty-list) policy: plain create admitted,
+    any operation rejected (AC5/AC9)."""
+    from rightsizing.mirror.run import application_body
+
+    cfg = Config.model_validate({"git": {"url": "http://gitea/a/resource.git"}})
+
+    def dry_run(body):
+        return subprocess.run(["kubectl", "--as", "system:serviceaccount:rightsizing:gitops-mirror", "create",
+                               "--dry-run=server", "-o", "name", "-f", "-"], input=json.dumps(body),
+                              capture_output=True, text=True)
+    plain = application_body(cfg, "development", "rs-dryrun")
+    assert dry_run(plain).returncode == 0, dry_run(plain).stderr
+    synced = application_body(cfg, "development", "rs-dryrun", "0" * 40)
+    proc = dry_run(synced)
+    assert proc.returncode != 0 and "sync operation" in proc.stderr

@@ -11,9 +11,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .. import logs
-from ..config import DEFAULT_CONFIG_PATH, SecretStore, load_config
+from ..config import DEFAULT_CONFIG_PATH, Config, SecretStore, load_config
 from ..gitops import GitError, clone, git_env, write_askpass
-from .run import EXIT_INFRA, KubeMirrorClient, run_mirror
+from ..runrecord import MIRROR_DIR, write_record
+from .run import EXIT_INFRA, KubeMirrorClient, MirrorReport, merge_mirror_records, mirror_record, run_mirror
 
 log = logging.getLogger("rightsizing.mirror")
 
@@ -21,7 +22,8 @@ log = logging.getLogger("rightsizing.mirror")
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="rightsizing.mirror",
                                 description="GitOps mirror: add new Deployments to the manifest repo + ArgoCD, "
-                                            "remove deleted ones (guarded). Never syncs.")
+                                            "remove deleted ones (guarded). Never syncs, except the opt-in "
+                                            "SHA-pinned first sync (mirror.auto_first_sync_namespaces).")
     p.add_argument("--config", default=DEFAULT_CONFIG_PATH)
     p.add_argument("--workdir", default=None)
     p.add_argument("--dry-run", action="store_true", help="print the plan only; no commits, no ArgoCD changes")
@@ -56,11 +58,26 @@ def cli(argv: list[str] | None = None) -> int:
     log.info("summary", extra=report.summary())
     if args.dry_run:
         p = report.plan
-        print(json.dumps({"add": [f"{a[0]}/{a[1]}" for a in p.add_dir], "refresh": [f"{a[0]}/{a[1]}" for a in p.refresh_dir],
-                          "delete": [f"{a[0]}/{a[1]}" for a in p.delete_dir], "create_app": [f"{a[0]}/{a[1]}" for a in p.create_app],
-                          "delete_app": p.delete_app, "halts": p.halts, "manual": p.manual,
-                          "skipped": p.skipped}, ensure_ascii=False, indent=1))
+        out = {"add": [f"{a[0]}/{a[1]}" for a in p.add_dir], "refresh": [f"{a[0]}/{a[1]}" for a in p.refresh_dir],
+               "delete": [f"{a[0]}/{a[1]}" for a in p.delete_dir], "create_app": [f"{a[0]}/{a[1]}" for a in p.create_app],
+               "delete_app": p.delete_app, "halts": p.halts, "manual": p.manual,
+               "skipped": p.skipped}
+        if p.adopt_dir or p.first_sync or p.sync_skipped:
+            out.update(adopt={f"{a[0]}/{a[1]}": a[3] for a in p.adopt_dir},
+                       first_sync={f"{a[0]}/{a[1]}": a[2] for a in p.first_sync}, sync_skipped=p.sync_skipped)
+        print(json.dumps(out, ensure_ascii=False, indent=1))
+    elif cfg.report is not None:
+        write_mirror_record(cfg, report, now, workdir, token if token.exists() else None)
     return report.exit_code
+
+
+def write_mirror_record(cfg: Config, report: MirrorReport, now: datetime, workdir: Path, token: Path | None) -> None:
+    """Non-fatal: a missing record only shows a banner in the daily report; the exit code is unchanged."""
+    try:
+        write_record(cfg, mirror_record(cfg, report, now), workdir, token, prefix=MIRROR_DIR,
+                     merge=merge_mirror_records)
+    except Exception as exc:
+        log.warning("mirror record not written", extra={"error": f"{type(exc).__name__}: {str(exc)[-200:]}"})
 
 
 if __name__ == "__main__":

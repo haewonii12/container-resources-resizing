@@ -66,6 +66,14 @@ data:
       max_delete_ratio: 0.3
       min_apps_for_ratio: 5
       skip_helm: true
+      # Opt-in per namespace (subsets of mirror.namespaces; empty = today's behaviour). After changing
+      # auto_first_sync_namespaces run python scripts/gen_namespaces.py and re-apply the admission policy.
+      # auto: the mirror starts the first sync of its never-synced apps, pinned to the SHA it pushed, only when
+      #   git == live (tracking metadata only, no rollout). adopt: kubectl drift of synced apps is committed to git
+      #   (Mirror-Action: adopt), overwriting pending rightsizing proposals and unsynced human edits.
+      auto_first_sync_namespaces: []    # e.g. [development]
+      adopt_drift_namespaces: []        # e.g. [development]
+      adopt_ignore_annotation_prefixes: []   # e.g. [sidecar.istio.io/]
     report:
       # Daily report + rightsizing run record. MUST be a different repo from git.url; the bot needs write on it.
       # Create the repo (and the bot's write permission) BEFORE enabling this, or rightsizing exits 2.

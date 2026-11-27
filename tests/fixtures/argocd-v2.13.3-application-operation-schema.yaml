@@ -1,0 +1,166 @@
+# Vendored from ArgoCD v2.13.3 install.yaml (CRD applications.argoproj.io, v1alpha1):
+# openAPIV3Schema.properties.operation, truncated below operation.sync.syncStrategy.{apply,hook}
+# and with descriptions removed. Source: ~/harness/rightsizing-airgap/templates/10-argocd-install.yaml.
+# tests/test_deploy.py pins the generated ValidatingAdmissionPolicy deny list to these property sets.
+type: object
+properties:
+  info:
+    type: array
+  initiatedBy:
+    type: object
+    properties:
+      automated:
+        type: boolean
+      username:
+        type: string
+  retry:
+    type: object
+    properties:
+      backoff:
+        type: object
+        properties:
+          duration:
+            type: string
+          factor:
+            format: int64
+            type: integer
+          maxDuration:
+            type: string
+      limit:
+        format: int64
+        type: integer
+  sync:
+    type: object
+    properties:
+      autoHealAttemptsCount:
+        format: int64
+        type: integer
+      dryRun:
+        type: boolean
+      manifests:
+        type: array
+      prune:
+        type: boolean
+      resources:
+        type: array
+      revision:
+        type: string
+      revisions:
+        type: array
+      source:
+        required:
+          - repoURL
+        type: object
+        properties:
+          chart:
+            type: string
+          directory:
+            type: object
+            properties:
+              exclude:
+                type: string
+              include:
+                type: string
+              jsonnet:
+                type: object
+              recurse:
+                type: boolean
+          helm:
+            type: object
+            properties:
+              apiVersions:
+                type: array
+              fileParameters:
+                type: array
+              ignoreMissingValueFiles:
+                type: boolean
+              kubeVersion:
+                type: string
+              namespace:
+                type: string
+              parameters:
+                type: array
+              passCredentials:
+                type: boolean
+              releaseName:
+                type: string
+              skipCrds:
+                type: boolean
+              valueFiles:
+                type: array
+              values:
+                type: string
+              valuesObject:
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
+              version:
+                type: string
+          kustomize:
+            type: object
+            properties:
+              apiVersions:
+                type: array
+              commonAnnotations:
+                type: object
+              commonAnnotationsEnvsubst:
+                type: boolean
+              commonLabels:
+                type: object
+              components:
+                type: array
+              forceCommonAnnotations:
+                type: boolean
+              forceCommonLabels:
+                type: boolean
+              images:
+                type: array
+              kubeVersion:
+                type: string
+              labelWithoutSelector:
+                type: boolean
+              namePrefix:
+                type: string
+              nameSuffix:
+                type: string
+              namespace:
+                type: string
+              patches:
+                type: array
+              replicas:
+                type: array
+              version:
+                type: string
+          path:
+            type: string
+          plugin:
+            type: object
+            properties:
+              env:
+                type: array
+              name:
+                type: string
+              parameters:
+                type: array
+          ref:
+            type: string
+          repoURL:
+            type: string
+          targetRevision:
+            type: string
+      sources:
+        type: array
+      syncOptions:
+        type: array
+      syncStrategy:
+        type: object
+        properties:
+          apply:
+            type: object
+            properties:
+              force:
+                type: boolean
+          hook:
+            type: object
+            properties:
+              force:
+                type: boolean

@@ -170,3 +170,21 @@ def test_dry_run_does_not_write(rep):
     res, sleeps = run(rep, dry_run=True)
     assert res.exit_code == EXIT_OK and res.commit is None and "# Daily report 2026-11-26" in res.markdown
     assert "reports/" not in sh(rep["tmp"], "--git-dir", str(rep["bare"]), "ls-tree", "-r", "--name-only", "main")
+
+
+def test_loads_todays_mirror_record(rep):
+    push_record(rep)
+    res, _ = run(rep)
+    assert "> ⚠️ mirror 기록 없음" in res.markdown
+    sh(rep["seed"], "pull", "-q", "origin", "main")
+    path = rep["seed"] / "mirror/2026/11/2026-11-26.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"record_version": 1, "date": "2026-11-26", "exit_code": 0, "created": [],
+                                "first_synced": ["development/web"], "adopted": [], "skipped": [],
+                                "deleted": [], "recreate_failed": []}))
+    sh(rep["seed"], "add", ".")
+    sh(rep["seed"], "commit", "-m", "mirror record")
+    sh(rep["seed"], "push", "-q", "origin", "main")
+    res, _ = run(rep)
+    assert "mirror 기록 없음" not in res.markdown and "| development/web |" in res.markdown
+    assert json.loads(show(rep, "reports/2026/11/2026-11-26.json"))["mirror"]["first_synced"] == ["development/web"]

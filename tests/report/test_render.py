@@ -50,3 +50,26 @@ def test_usage_column_follows_window_days():
     md = render_markdown(report(window_days=3))
     assert "| 3일 사용량 |" in md and "최근 3일 P95 (mem.lim은 최대값)" in md
     assert "7일" not in md
+
+
+MIRROR = {"record_version": 1, "date": "2026-11-26", "exit_code": 0, "created": ["development/new"],
+          "first_synced": ["development/new"], "deleted": [], "recreate_failed": [],
+          "adopted": [{"path": "development/web", "changes": ["replicas 1→3", "env[app] FOO changed"],
+                       "overwrote": [{"sha": "a" * 40, "kind": "rightsizing"}, {"sha": "b" * 40, "kind": "human"}]}],
+          "refreshed": [], "skipped": [{"path": "development/api", "reason": "live_changed"}]}
+
+
+def test_mirror_section_tables():
+    md = render_markdown(report(mirror=MIRROR))
+    order = ["## 변경 예정", "## 어제 밤 mirror", "### 첫 Sync", "| development/new |", "### 클러스터 변경을 git에 반영 (adopt)",
+             "| development/web | replicas 1→3<br>env[app] FOO changed | overwrote pending proposal aaaaaaaaaa"
+             "<br>overwrote human edit bbbbbbbbbb |", "### 건너뜀", "| development/api | live_changed |", "## 노드 용량"]
+    pos = [md.index(s) for s in order]
+    assert pos == sorted(pos)
+    assert '"first_synced": [' in render_json(report(mirror=MIRROR))
+
+
+def test_mirror_section_missing_record_banner():
+    md = render_markdown(report())
+    assert "## 어제 밤 mirror\n\n> ⚠️ mirror 기록 없음" in md
+    assert '"mirror": null' in render_json(report())

@@ -15,7 +15,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from ..config import MirrorConfig
-from .clean import content_hash
+from .clean import content_hash, to_yaml
+from .diff import semantic_diff
 from .scan import RepoScan
 
 STATE_PATH = ".mirror/state.yaml"
@@ -44,9 +45,10 @@ class AppInfo:
     name: str
     managed: bool  # created by the mirror (managed label)
     synced_ever: bool  # status.history non-empty
-    operation_pending: bool  # status.operationState present
+    operation_pending: bool  # app.operation set, or status.operationState.phase Running/Terminating
     multi_source: bool = False
     has_resources_finalizer: bool = False  # deleting it would cascade (DV-A)
+    has_finalizers: bool = False  # any finalizer (a recreate for the first sync needs none)
 
 
 @dataclass
@@ -62,6 +64,10 @@ class Inputs:
     paths_on_disk: set[str]  # "ns/name" directories that exist in the repo
     state: MirrorState
     now: datetime
+    # only filled for auto-first-sync / adopt-drift namespaces
+    live_docs: dict[str, dict] = field(default_factory=dict)  # "ns/name" -> clean(live) of an own Deployment
+    repo_docs: dict[str, dict] = field(default_factory=dict)  # "ns/name" -> parsed HEAD deployment.yaml
+    unsynced_commits: dict[str, list[tuple[str, str]]] = field(default_factory=dict)  # -> [(sha, rightsizing|human)]
 
 
 @dataclass
@@ -76,6 +82,11 @@ class Plan:
     manual: dict[str, str] = field(default_factory=dict)  # "ns/name" -> needs a human (DV-A)
     list_errors: list[str] = field(default_factory=list)
     state: MirrorState = field(default_factory=MirrorState)
+    # (ns, name, yaml, changes, overwritten unsynced commits [(sha, kind)])
+    adopt_dir: list[tuple[str, str, str, list[str], list[tuple[str, str]]]] = field(default_factory=list)
+    refresh_overwrote: dict[str, list[tuple[str, str]]] = field(default_factory=dict)  # adopt ns only
+    first_sync: list[tuple[str, str, str]] = field(default_factory=list)  # (ns, name, create|recreate)
+    sync_skipped: dict[str, str] = field(default_factory=dict)  # "ns/name" -> why no first sync / adoption
 
     @property
     def exit_code(self) -> int:
@@ -84,7 +95,8 @@ class Plan:
         return 4 if (self.halts or self.manual) else 0
 
     def is_empty(self) -> bool:
-        return not (self.add_dir or self.refresh_dir or self.delete_dir or self.create_app or self.delete_app)
+        return not (self.add_dir or self.refresh_dir or self.delete_dir or self.create_app or self.delete_app
+                    or self.adopt_dir or self.first_sync)
 
 
 def build_plan(inp: Inputs, cfg: MirrorConfig) -> Plan:
@@ -125,10 +137,17 @@ def build_plan(inp: Inputs, cfg: MirrorConfig) -> Plan:
             if info.synced_ever or info.operation_pending:
                 continue  # synced at least once: git owns the content now
             if not inp.last_commit_is_mirror.get(path) or st.exports.get(path) != content_hash(current):
-                plan.skipped[path] = "human_edited"
-                continue
+                if ns not in cfg.adopt_drift_namespaces:
+                    plan.skipped[path] = "human_edited"
+                    continue
+                plan.refresh_overwrote[path] = list(inp.unsynced_commits.get(path, []))  # the cluster wins
             plan.refresh_dir.append((ns, name, text))
             st.exports[path] = content_hash(text)
+
+        if ns in cfg.adopt_drift_namespaces:
+            _plan_adopt(inp, cfg, plan, ns, repo_apps)
+        if ns in cfg.auto_first_sync_namespaces:
+            _plan_first_sync(inp, cfg, plan, ns, repo_apps)
 
         # --- self-heal: every app dir needs an Application; Applications without a dir are removed
         for name in repo_apps:
@@ -198,3 +217,67 @@ def build_plan(inp: Inputs, cfg: MirrorConfig) -> Plan:
                     and k not in {f"{a[0]}/{a[1]}" for a in plan.add_dir}]:
             del st.exports[key]
     return plan
+
+
+def _plan_adopt(inp: Inputs, cfg: MirrorConfig, plan: Plan, ns: str, repo_apps: list[str]) -> None:
+    """Synced mirror apps whose live Deployment drifted from git: commit clean(live) (the cluster wins)."""
+    for name in repo_apps:
+        path = f"{ns}/{name}"
+        info = inp.apps_by_path.get(path)
+        if inp.skipped.get(path) == "foreign_tracked":
+            plan.sync_skipped[path] = "foreign_tracked"
+            continue
+        if not (info and info.synced_ever):
+            continue  # never synced: refresh / first sync handle it
+        live, repo_doc = inp.live_docs.get(path), inp.repo_docs.get(path)
+        if live is None or repo_doc is None:
+            continue
+        changes = semantic_diff(repo_doc, live, cfg.adopt_ignore_annotation_prefixes)
+        if not changes:
+            continue
+        if not info.managed:
+            plan.sync_skipped[path] = "not_managed"
+        elif info.operation_pending:
+            plan.sync_skipped[path] = "operation_pending"
+        else:
+            text = to_yaml(live)
+            plan.adopt_dir.append((ns, name, text, changes, list(inp.unsynced_commits.get(path, []))))
+            plan.state.exports[path] = content_hash(text)
+
+
+def _plan_first_sync(inp: Inputs, cfg: MirrorConfig, plan: Plan, ns: str, repo_apps: list[str]) -> None:
+    """Never-synced mirror apps whose git content provably equals live get one SHA-pinned first sync.
+
+    Self-heal creates (a repo dir without an Application) never get one: their content may be human-written."""
+    for a_ns, name, _ in plan.add_dir:
+        if a_ns == ns and (ns, name) in plan.create_app:
+            plan.first_sync.append((ns, name, "create"))
+    refreshed = {name for r_ns, name, _ in plan.refresh_dir if r_ns == ns}
+    for name in repo_apps:
+        path = f"{ns}/{name}"
+        info = inp.apps_by_path.get(path)
+        if info is None or info.synced_ever:
+            continue  # self-heal create, or first sync already done
+        live, repo_doc = inp.live_docs.get(path), inp.repo_docs.get(path)
+        if inp.skipped.get(path) == "foreign_tracked":
+            reason = "foreign_tracked"
+        elif not info.managed or info.multi_source:
+            reason = "not_managed"
+        elif info.operation_pending:
+            reason = "operation_pending"
+        elif info.has_finalizers or info.has_resources_finalizer:
+            reason = "finalizer"
+        elif live is None:
+            continue  # not live (missing detection handles it)
+        elif name in refreshed:
+            reason = None  # the mirror wrote clean(live) in this run
+        elif not inp.last_commit_is_mirror.get(path):
+            reason = "human_last_commit"
+        elif repo_doc is None or semantic_diff(repo_doc, live, cfg.adopt_ignore_annotation_prefixes):
+            reason = "live_differs"
+        else:
+            reason = None
+        if reason:
+            plan.sync_skipped[path] = reason
+        else:
+            plan.first_sync.append((ns, name, "recreate"))

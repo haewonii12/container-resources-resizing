@@ -33,12 +33,18 @@ class FakeMirrorKube:
         self.calls: list[tuple] = []
         self.fail = set()  # e.g. {"create", "list:development", "list_apps"}
         self.hpa = {}
+        self.bodies: list[dict] = []  # every create_application body
 
     def list_deployments(self, namespace):
         self.calls.append(("list", namespace))
         if f"list:{namespace}" in self.fail:
             raise RuntimeError("403")
         return [copy.deepcopy(d) for (ns, _), d in self.deployments.items() if ns == namespace]
+
+    def get_deployment(self, namespace, name):
+        self.calls.append(("get_deployment", namespace, name))
+        d = copy.deepcopy(self.deployments.get((namespace, name)))
+        return self.on_get_deployment(d) if getattr(self, "on_get_deployment", None) and d else d
 
     def list_hpa_targets(self, namespace):
         return set(self.hpa.get(namespace, set()))
@@ -50,6 +56,7 @@ class FakeMirrorKube:
 
     def create_application(self, body):
         self.calls.append(("create", body["metadata"]["name"]))
+        self.bodies.append(copy.deepcopy(body))
         if "create" in self.fail:
             raise RuntimeError("argo down")
         app = copy.deepcopy(body)
@@ -58,7 +65,8 @@ class FakeMirrorKube:
         self.apps[body["metadata"]["name"]] = app
 
     def get_application(self, name):
-        return copy.deepcopy(self.apps.get(name))
+        app = copy.deepcopy(self.apps.get(name))
+        return self.on_get_application(app) if getattr(self, "on_get_application", None) and app else app
 
     def delete_application(self, name, uid, resource_version):
         self.calls.append(("delete", name, uid, resource_version))

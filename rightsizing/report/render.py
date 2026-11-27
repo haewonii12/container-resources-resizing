@@ -28,6 +28,7 @@ class DailyReport:
     metrics_available: bool = True
     window_days: int = 7  # Prometheus window behind the usage column (Config.window_days)
     notes: list[str] = field(default_factory=list)
+    mirror: dict | None = None  # last night's gitops-mirror record (mirror/YYYY/MM/<date>.json)
 
 
 def _q(fname: str, v: float | None) -> str:
@@ -47,6 +48,37 @@ def _gi(b: float) -> str:
 
 def _cell(text: str) -> str:
     return str(text).replace("|", "/").replace("\n", " ")
+
+
+_OVERWROTE = {"rightsizing": "pending proposal", "human": "human edit"}
+
+
+def _overwrote(entries: list[dict]) -> str:
+    return "<br>".join(f"overwrote {_OVERWROTE.get(o.get('kind'), o.get('kind'))} {str(o.get('sha'))[:10]}"
+                       for o in entries) or "-"
+
+
+def _mirror_section(m: dict | None) -> list[str]:
+    out = ["## 어제 밤 mirror", ""]
+    if m is None:
+        return out + ["> ⚠️ mirror 기록 없음", ""]
+    out += [f"등록 {len(m.get('created') or [])} · 첫 Sync {len(m.get('first_synced') or [])} · "
+            f"클러스터 반영(adopt) {len(m.get('adopted') or [])} · 정리 {len(m.get('deleted') or [])} · "
+            f"건너뜀 {len(m.get('skipped') or [])} (exit {m.get('exit_code')})", ""]
+    if m.get("first_synced"):
+        out += ["### 첫 Sync (mirror가 자동 실행, pod 재시작 없음)", "", "| 앱 |", "|---|"]
+        out += [f"| {_cell(p)} |" for p in m["first_synced"]] + [""]
+    refreshed = [x for x in m.get("refreshed") or [] if x.get("overwrote")]  # never-synced, human edit overwritten
+    if m.get("adopted") or refreshed:
+        out += ["### 클러스터 변경을 git에 반영 (adopt)", "", "| 앱 | 변경 | 덮어씀 |", "|---|---|---|"]
+        out += [f"| {_cell(a['path'])} | {_cell('<br>'.join(a.get('changes') or [])) or '-'} "
+                f"| {_overwrote(a.get('overwrote') or [])} |" for a in m.get("adopted") or []]
+        out += [f"| {_cell(x['path'])} | refresh (첫 Sync 전) | {_overwrote(x['overwrote'])} |" for x in refreshed]
+        out.append("")
+    if m.get("skipped"):
+        out += ["### 건너뜀", "", "| 앱 | 사유 |", "|---|---|"]
+        out += [f"| {_cell(s['path'])} | {_cell(s['reason'])} |" for s in m["skipped"]] + [""]
+    return out
 
 
 def render_markdown(r: DailyReport) -> str:
@@ -79,6 +111,7 @@ def render_markdown(r: DailyReport) -> str:
         out += [f"| {s.namespace} | {s.deployment} | {_cell(s.reason)} |" for s in t.skips]
         out += ["", "</details>", ""]
 
+    out += _mirror_section(r.mirror)
     out += ["## 노드 용량", ""]
     if not r.metrics_available:
         out += ["(metrics.k8s.io를 읽지 못해 실사용량은 n/a로 표시합니다)", ""]
