@@ -8,7 +8,8 @@ import pytest
 
 from rightsizing.config import Config, ReportConfig
 from rightsizing.mirror import __main__ as mirror_cli
-from rightsizing.mirror.run import EXIT_INFRA, EXIT_OK, _last_commit_is_mirror, application_body, mirror_record
+from rightsizing.mirror.run import (EXIT_INFRA, EXIT_OK, MirrorReport, _apply_recreate, _last_commit_is_mirror,
+                                    application_body, merge_mirror_records, mirror_record)
 from tests.mirror.test_run import T0, deployment, git, mirror, remote, remote_file, world  # noqa: F401
 
 SHA_LEN = 40
@@ -282,3 +283,36 @@ def test_cli_dry_run_and_no_report_section_skip_the_record(world, tmp_path, monk
     cfg.write_text(f"git: {{url: '{url}'}}\nsecret_dir: {tmp_path}\n")
     mirror_cli.cli(["--config", str(cfg), "--workdir", str(tmp_path / "w3")])
     assert len(calls) == 1
+
+
+def test_record_after_git_failure_lists_planned_items_as_git_failed(world):
+    world["kube"].deployments[("development", "demo-x")] = deployment("demo-x")
+    report, _ = mirror(world, dry_run=True)  # a plan with one add, as a failed git phase would leave it
+    report.git_applied, report.exit_code = False, EXIT_INFRA
+    rec = mirror_record(world["cfg"], report, T0)
+    assert rec["created"] == [] and rec["first_synced"] == []
+    assert {"path": "development/demo-x", "reason": "git_failed"} in rec["skipped"]
+
+
+def test_recreate_refuses_a_non_sha_revision_before_deleting(world):
+    kube = world["kube"]
+    kube.deployments[("development", "demo-x")] = deployment("demo-x")
+    mirror(world)
+
+    class Bad:
+        pushed = "main"
+
+    from rightsizing.mirror.plan import Plan
+    plan = Plan(first_sync=[("development", "demo-x", "recreate")])
+    with pytest.raises(ValueError):
+        _apply_recreate(world["cfg"], kube, plan, MirrorReport(0, plan), Bad())
+    assert "demo-x" in kube.apps  # nothing deleted
+
+
+def test_merge_drops_failures_that_succeeded_later_the_same_day():
+    old = {"record_version": 1, "date": "2026-11-26", "exit_code": 2, "first_synced": [], "adopted": [],
+           "skipped": [{"path": "a/x", "reason": "live_changed"}], "recreate_failed": ["a/y"]}
+    new = {"record_version": 1, "date": "2026-11-26", "exit_code": 0, "first_synced": ["a/x", "a/y"],
+           "adopted": [], "skipped": [], "recreate_failed": []}
+    out = merge_mirror_records(old, new)
+    assert out["skipped"] == [] and out["recreate_failed"] == [] and out["first_synced"] == ["a/x", "a/y"]

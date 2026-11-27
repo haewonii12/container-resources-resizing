@@ -54,6 +54,7 @@ class MirrorReport:
     first_synced: list[str] = field(default_factory=list)  # "ns/name" created with a SHA-pinned sync operation
     sync_skipped: dict[str, str] = field(default_factory=dict)  # "ns/name" -> reason (plan + apply phase)
     recreate_failed: list[str] = field(default_factory=list)  # deleted for the first sync, create failed
+    git_applied: bool = True  # False when the git phase failed: the planned git-side actions did not happen
 
     def summary(self) -> dict:
         p = self.plan
@@ -72,6 +73,11 @@ def mirror_record(cfg: Config, report: MirrorReport, now: datetime) -> dict:
     p = report.plan
     tz = cfg.report.timezone if cfg.report else "Asia/Seoul"
     skipped = {**report.sync_skipped, **{path: "recreate_failed" for path in report.recreate_failed}}
+    if not report.git_applied:  # nothing was committed or pushed: report the planned items as not done
+        skipped.update({f"{ns}/{name}": "git_failed"
+                        for items in (p.add_dir, p.adopt_dir, p.refresh_dir) for ns, name, *_ in items})
+        skipped.update({f"{ns}/{name}": "git_failed" for ns, name in p.delete_dir})
+        p = Plan(state=p.state)
     return {
         "record_version": RECORD_VERSION,
         "date": local_date(now, tz).isoformat(),
@@ -105,6 +111,9 @@ def merge_mirror_records(old: dict, new: dict) -> dict:
         for item in list(old.get(key) or []) + value:
             merged[item["path"] if isinstance(item, dict) else item] = item
         out[key] = list(merged.values())
+    done = set(out.get("first_synced") or []) | {a["path"] for a in out.get("adopted") or []}
+    out["skipped"] = [s for s in out.get("skipped") or [] if s["path"] not in done]
+    out["recreate_failed"] = [p for p in out.get("recreate_failed") or [] if p not in done]
     out["runs"] = int(old.get("runs", 1)) + 1
     out["exit_code"] = max(int(old.get("exit_code", 0)), int(new.get("exit_code", 0)))
     return out
@@ -302,6 +311,7 @@ def run_mirror(cfg: Config, kube: MirrorKube, repo: GitRepo, now: datetime, dry_
         log.error("git apply failed", extra={"error": str(exc)})
         repo.reset_worktree()
         report.exit_code = EXIT_INFRA
+        report.git_applied = False
         return report  # nothing pushed -> do not touch ArgoCD; the next run replans from scratch
     recheck = _Recheck(cfg, kube, repo, repo.head(), hpa_by_ns) if plan.first_sync else None
     _apply_argocd(cfg, kube, plan, apps, apps_by_name, report, recheck)
@@ -449,6 +459,8 @@ def _recreate_guard(cfg: Config, app: dict | None, path: str) -> str | None:
 
 def _apply_recreate(cfg: Config, kube: MirrorKube, plan: Plan, report: MirrorReport, recheck: _Recheck) -> None:
     """Existing never-synced mirror apps: orphan delete (uid/rv precondition), then create with the operation."""
+    if not _SHA.match(recheck.pushed):  # checked before any delete: a bad revision must not cost an app
+        raise ValueError(f"pushed revision is not a commit SHA: {recheck.pushed!r}")
     for ns, name, mode in plan.first_sync:
         if mode != "recreate":
             continue
