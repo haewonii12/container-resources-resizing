@@ -106,8 +106,10 @@ class Reviewer:
                                                         tool_choice="auto", temperature=0)
                 msg = resp.choices[0].message
             except Exception as exc:  # transport, HTTP, parsing: all fail closed
-                log.warning("llm call failed", extra={"error": type(exc).__name__})
-                return ReviewResult("hold", reason="llm_unavailable", notes=f"LLM 호출 실패 ({type(exc).__name__})",
+                status = getattr(exc, "status_code", None)
+                kind = f"{type(exc).__name__}{f' {status}' if status else ''}"
+                log.warning("llm call failed", extra={"error": kind, "detail": _llm_error_detail(exc)})
+                return ReviewResult("hold", reason="llm_unavailable", notes=f"LLM 호출 실패 ({kind})",
                                     turns=turn, invalid_calls=invalid)
             tool_calls = list(getattr(msg, "tool_calls", None) or [])
             messages.append({"role": "assistant", "content": msg.content or "",
@@ -184,6 +186,14 @@ class Reviewer:
         log.warning("security:tool_refused", extra={"detail": detail})
         return ReviewResult("hold", reason="security", notes="보안 정책 위반 도구 호출로 보류",
                             security_events=[detail], turns=turn, invalid_calls=invalid)
+
+
+def _llm_error_detail(exc: Exception) -> str:
+    """Server message or transport cause of a failed LLM call, for the log only (never the prompt or the key)."""
+    text = getattr(exc, "message", None) or str(exc)
+    if exc.__cause__ is not None:
+        text += f" (cause: {type(exc.__cause__).__name__}: {exc.__cause__})"
+    return text[:300]
 
 
 def _tool_msg(call_id: str, content: str) -> dict:

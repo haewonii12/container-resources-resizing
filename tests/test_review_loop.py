@@ -1,6 +1,7 @@
 import copy
 import json
 
+import httpx
 import pytest
 
 from rightsizing.kubectl_tool import SecurityRefusal, ToolInvalid, build_command, truncate
@@ -215,3 +216,21 @@ def test_notes_with_numbers_do_not_change_values():
     assert payload == PAYLOAD and r.decision == "apply"
     sent = json.loads(llm.requests[0]["messages"][1]["content"])
     assert sent["recommendation"][0]["new"] == 1100
+
+
+def test_llm_http_error_logs_status_and_server_message(caplog):
+    class NotFoundLLM(FakeLLM):
+        def __call__(self, request):
+            return httpx.Response(404, json={"error": {"message": "The model `m` does not exist."}})
+
+    r = reviewer(NotFoundLLM([])).review(REF, PAYLOAD)
+    assert r.decision == "hold" and r.reason == "llm_unavailable" and r.notes == "LLM 호출 실패 (NotFoundError 404)"
+    rec = next(x for x in caplog.records if x.getMessage() == "llm call failed")
+    assert "does not exist" in rec.detail
+
+
+def test_llm_connection_error_logs_the_cause(caplog):
+    r = reviewer(FakeLLM([], down=True)).review(REF, PAYLOAD)
+    assert r.notes == "LLM 호출 실패 (APIConnectionError)"
+    rec = next(x for x in caplog.records if x.getMessage() == "llm call failed")
+    assert "llm down" in rec.detail
