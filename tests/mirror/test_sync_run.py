@@ -316,3 +316,25 @@ def test_merge_drops_failures_that_succeeded_later_the_same_day():
            "adopted": [], "skipped": [], "recreate_failed": []}
     out = merge_mirror_records(old, new)
     assert out["skipped"] == [] and out["recreate_failed"] == [] and out["first_synced"] == ["a/x", "a/y"]
+
+
+def test_recreate_keeps_the_app_when_admission_would_refuse_the_sync(world, caplog):
+    kube = world["kube"]
+    kube.deployments[("development", "demo-x")] = deployment("demo-x")
+    mirror(world)
+    auto(world)
+    kube.fail.add("deny_operation")  # e.g. auto list set, but the new admission policy (out/20) not applied
+    report, _ = mirror(world, now=T0 + timedelta(days=1))
+    assert report.sync_skipped["development/demo-x"] == "admission_denied" and report.recreate_failed == []
+    assert "demo-x" in kube.apps and not any(c[0] == "delete" for c in kube.calls)
+    assert report.exit_code == EXIT_OK
+    assert any("422" in str(getattr(r, "error", "")) for r in caplog.records)
+
+
+def test_new_app_is_created_plain_when_admission_refuses_the_first_sync(world):
+    auto(world)
+    world["kube"].fail.add("deny_operation")
+    world["kube"].deployments[("development", "demo-x")] = deployment("demo-x")
+    report, _ = mirror(world)
+    assert report.app_results["demo-x"] == "created" and "operation" not in world["kube"].apps["demo-x"]
+    assert report.sync_skipped["development/demo-x"] == "admission_denied" and report.first_synced == []

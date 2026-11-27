@@ -6,6 +6,7 @@ Exit codes: 0 ok | 2 infrastructure (listing, git, ArgoCD API errors) | 4 safety
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from dataclasses import dataclass, field
@@ -40,7 +41,7 @@ class MirrorKube(Protocol):
     def get_deployment(self, namespace: str, name: str) -> dict | None: ...
     def list_hpa_targets(self, namespace: str) -> set[str]: ...
     def list_applications(self) -> list[dict]: ...
-    def create_application(self, body: dict) -> None: ...
+    def create_application(self, body: dict, dry_run: bool = False) -> None: ...
     def get_application(self, name: str) -> dict | None: ...
     def delete_application(self, name: str, uid: str, resource_version: str) -> None: ...
 
@@ -409,12 +410,22 @@ def _apply_argocd(cfg: Config, kube: MirrorKube, plan: Plan, apps: dict, apps_by
             else:
                 report.sync_skipped[f"{ns}/{name}"] = "live_changed"  # created plain; retried next night
         try:
-            kube.create_application(application_body(cfg, ns, name, revision))
+            try:
+                kube.create_application(application_body(cfg, ns, name, revision))
+            except Exception as exc:
+                if not revision or getattr(exc, "status", None) not in _ADMISSION_DENIED:
+                    raise
+                # the admission policy refused the first sync (e.g. out/20 not re-applied): register it plain
+                log.error("first sync refused by admission, creating without it",
+                          extra={"app": aname, "error": _api_error(exc)})
+                report.sync_skipped[f"{ns}/{name}"] = "admission_denied"
+                revision = None
+                kube.create_application(application_body(cfg, ns, name))
             report.app_results[aname] = "created"
             if revision:
                 report.first_synced.append(f"{ns}/{name}")
         except Exception as exc:
-            log.error("Application create failed", extra={"app": aname, "error": type(exc).__name__})
+            log.error("Application create failed", extra={"app": aname, "error": _api_error(exc)})
             report.app_results[aname] = "create_failed"
             report.exit_code = EXIT_INFRA
     for path in plan.delete_app:
@@ -438,6 +449,23 @@ def _apply_argocd(cfg: Config, kube: MirrorKube, plan: Plan, apps: dict, apps_by
             log.error("Application delete failed", extra={"app": aname, "error": type(exc).__name__})
             report.app_results[aname] = "delete_failed"
             report.exit_code = EXIT_INFRA
+
+
+_ADMISSION_DENIED = (400, 403, 422)  # Invalid / Forbidden: the ValidatingAdmissionPolicy (or RBAC) said no
+
+
+def _api_error(exc: Exception) -> str:
+    """Short, loggable cause of a Kubernetes API error (status + server message), never the request body."""
+    status = getattr(exc, "status", None)
+    message = ""
+    body = getattr(exc, "body", None)
+    if body:
+        try:
+            message = json.loads(body).get("message", "")
+        except (ValueError, AttributeError, TypeError):
+            message = str(body)
+    text = f"{type(exc).__name__}" + (f" {status}" if status else "") + (f": {message}" if message else "")
+    return text[:400]
 
 
 def _recreate_guard(cfg: Config, app: dict | None, path: str) -> str | None:
@@ -471,7 +499,7 @@ def _apply_recreate(cfg: Config, kube: MirrorKube, plan: Plan, report: MirrorRep
         try:
             app = kube.get_application(aname)
         except Exception as exc:
-            log.error("Application read failed", extra={"app": aname, "error": type(exc).__name__})
+            log.error("Application read failed", extra={"app": aname, "error": _api_error(exc)})
             report.sync_skipped[path] = "app_read_failed"
             report.exit_code = EXIT_INFRA
             continue
@@ -480,16 +508,28 @@ def _apply_recreate(cfg: Config, kube: MirrorKube, plan: Plan, report: MirrorRep
             report.sync_skipped[path] = guard
             continue
         meta = app["metadata"]
+        body = application_body(cfg, ns, name, recheck.pushed)
+        try:  # admission is evaluated before the name check: AlreadyExists (409) means the policy admits it
+            kube.create_application(body, dry_run=True)
+        except Exception as exc:
+            if getattr(exc, "status", None) != 409:
+                log.error("first sync would be refused, keeping the Application",
+                          extra={"app": aname, "error": _api_error(exc)})
+                report.sync_skipped[path] = ("admission_denied" if getattr(exc, "status", None) in _ADMISSION_DENIED
+                                             else "precheck_failed")
+                if getattr(exc, "status", None) not in _ADMISSION_DENIED:
+                    report.exit_code = EXIT_INFRA
+                continue
         try:
             kube.delete_application(aname, meta["uid"], meta["resourceVersion"])
         except Exception as exc:  # e.g. a human synced in between (resourceVersion precondition)
-            log.warning("first-sync delete failed", extra={"app": aname, "error": type(exc).__name__})
+            log.warning("first-sync delete failed", extra={"app": aname, "error": _api_error(exc)})
             report.sync_skipped[path] = "delete_failed"
             continue
         try:
-            kube.create_application(application_body(cfg, ns, name, recheck.pushed))
+            kube.create_application(body)
         except Exception as exc:  # the next run's self-heal recreates it without an operation
-            log.error("first-sync create failed after delete", extra={"app": aname, "error": type(exc).__name__})
+            log.error("first-sync create failed after delete", extra={"app": aname, "error": _api_error(exc)})
             report.app_results[aname] = "recreate_failed"
             report.recreate_failed.append(path)
             report.exit_code = EXIT_INFRA
@@ -551,9 +591,10 @@ class KubeMirrorClient:
         return self.custom.list_namespaced_custom_object(self.GROUP, self.VERSION, self.argo_ns, self.PLURAL,
                                                          _request_timeout=self.timeout).get("items", [])
 
-    def create_application(self, body: dict) -> None:
+    def create_application(self, body: dict, dry_run: bool = False) -> None:
+        extra = {"dry_run": "All"} if dry_run else {}
         self.custom.create_namespaced_custom_object(self.GROUP, self.VERSION, self.argo_ns, self.PLURAL, body,
-                                                    _request_timeout=self.timeout)
+                                                    _request_timeout=self.timeout, **extra)
 
     def get_application(self, name: str) -> dict | None:
         from kubernetes.client.exceptions import ApiException

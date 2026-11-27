@@ -26,6 +26,14 @@ def deployment(name, ns="development", image="nginx:1.27", **meta):
             "status": {"replicas": 1}}
 
 
+class ApiError(Exception):
+    """Shape of kubernetes.client.ApiException that the mirror reads (status, JSON body)."""
+
+    def __init__(self, status, message):
+        super().__init__(message)
+        self.status, self.body = status, '{"message": "%s"}' % message
+
+
 class FakeMirrorKube:
     def __init__(self, deployments=(), apps=()):
         self.deployments = {(d["metadata"]["namespace"], d["metadata"]["name"]): d for d in deployments}
@@ -54,8 +62,15 @@ class FakeMirrorKube:
             raise RuntimeError("down")
         return [copy.deepcopy(a) for a in self.apps.values()]
 
-    def create_application(self, body):
-        self.calls.append(("create", body["metadata"]["name"]))
+    def create_application(self, body, dry_run=False):
+        name = body["metadata"]["name"]
+        if "operation" in body and "deny_operation" in self.fail:  # admission runs before the name check
+            raise ApiError(422, "ValidatingAdmissionPolicy denied request: must not request a sync operation")
+        if dry_run:
+            if name in self.apps:
+                raise ApiError(409, "already exists")
+            return
+        self.calls.append(("create", name))
         self.bodies.append(copy.deepcopy(body))
         if "create" in self.fail:
             raise RuntimeError("argo down")

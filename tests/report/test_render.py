@@ -63,7 +63,7 @@ def test_mirror_section_tables():
     md = render_markdown(report(mirror=MIRROR))
     order = ["## 변경 예정", "## 어제 밤 mirror", "### 첫 Sync", "| development/new |", "### 클러스터 변경을 git에 반영 (adopt)",
              "| development/web | replicas 1→3<br>env[app] FOO changed | overwrote pending proposal aaaaaaaaaa"
-             "<br>overwrote human edit bbbbbbbbbb |", "### 건너뜀", "| development/api | live_changed |", "## 노드 용량"]
+             "<br>overwrote human edit bbbbbbbbbb |", "### 건너뜀", "| development/api | live_changed: Sync 직전에 클러스터 값이 git과 달라짐", "## 노드 용량"]
     pos = [md.index(s) for s in order]
     assert pos == sorted(pos)
     assert '"first_synced": [' in render_json(report(mirror=MIRROR))
